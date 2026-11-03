@@ -1,5 +1,5 @@
 import { computed, onBeforeUnmount, ref } from 'vue'
-import { listVoices, speak, stopSpeaking, type Voice } from '@/services/speech'
+import { VOICE_SAMPLE, listVoices, speak, stopSpeaking, type Voice } from '@/services/speech'
 
 export interface Sentence {
   text: string
@@ -38,8 +38,14 @@ export function useReadAloud(source: ReadAloudSource, hooks: ReadAloudHooks = {}
   const playing = ref(false)
   const sentence = ref('')
   const rate = ref(Number(localStorage.getItem('bibli.tts.rate')) || 1)
+  /** Voz elegida; null = automática (la mejor disponible). */
   const voiceId = ref<string | null>(localStorage.getItem('bibli.tts.voice'))
   const voices = ref<Voice[]>([])
+  /** La lista ya viene ordenada: la primera es la mejor. */
+  const effectiveVoiceId = computed(() =>
+    voiceId.value != null && voices.value.some((v) => v.id === voiceId.value) ? voiceId.value : (voices.value[0]?.id ?? null),
+  )
+  const currentVoice = computed(() => voices.value.find((v) => v.id === effectiveVoiceId.value) ?? null)
 
   let chunk: Sentence[] | null = null
   let index = 0
@@ -118,7 +124,7 @@ export function useReadAloud(source: ReadAloudSource, hooks: ReadAloudHooks = {}
         const s = chunk[index]
         sentence.value = s.text
         s.show?.()
-        await speak(s.text, { rate: rate.value, voiceId: voiceId.value })
+        await speak(s.text, { rate: rate.value, voiceId: effectiveVoiceId.value })
         if (id !== runId) return
         spokeAny = true
         index++
@@ -143,7 +149,7 @@ export function useReadAloud(source: ReadAloudSource, hooks: ReadAloudHooks = {}
       active.value = true
       spokeAny = false
       emptyStreak = 0
-      if (!voices.value.length) voices.value = await listVoices().catch(() => [])
+      if (!voices.value.length) await refreshVoices()
       hooks.onStart?.()
     }
     playing.value = true
@@ -212,6 +218,18 @@ export function useReadAloud(source: ReadAloudSource, hooks: ReadAloudHooks = {}
     restartSentence()
   }
 
+  /** Vuelve a pedir las voces (p. ej. después de descargar una nueva en los ajustes). */
+  async function refreshVoices() {
+    voices.value = await listVoices().catch(() => [])
+  }
+
+  /** Muestra de una voz. Pausa la lectura para no mezclar las dos. */
+  function preview(id: string) {
+    if (playing.value) pause()
+    stopSpeaking()
+    speak(VOICE_SAMPLE, { rate: rate.value, voiceId: id })
+  }
+
   onBeforeUnmount(() => {
     runId++
     stopSpeaking()
@@ -226,6 +244,7 @@ export function useReadAloud(source: ReadAloudSource, hooks: ReadAloudHooks = {}
     rate,
     voiceId,
     voices,
+    currentVoice,
     sleepMode,
     sleepLeft,
     play,
@@ -236,6 +255,8 @@ export function useReadAloud(source: ReadAloudSource, hooks: ReadAloudHooks = {}
     skip,
     setRate,
     setVoice,
+    refreshVoices,
+    preview,
     setSleep,
   }
 }

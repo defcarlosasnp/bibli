@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, type UnwrapNestedRefs } from 'vue'
 import { RATES, type ReadAloud, type SleepMode } from '@/composables/useReadAloud'
+import { QUALITY_LABEL, openVoiceInstaller, voiceHelp } from '@/services/speech'
 
 const props = defineProps<{
   ra: UnwrapNestedRefs<ReadAloud>
@@ -19,6 +20,9 @@ const SLEEP_OPTIONS: { label: string; value: SleepMode }[] = [
 
 const sleepOptions = computed(() => [...SLEEP_OPTIONS, { label: `Al acabar ${props.chunkName}`, value: 'chunk' as const }])
 
+const help = voiceHelp()
+const hasGoodVoice = computed(() => props.ra.voices.some((v) => v.quality === 'natural' || v.quality === 'good'))
+
 function rateLabel(r: number) {
   return `${r.toLocaleString('es', { maximumFractionDigits: 2 })}×`
 }
@@ -33,11 +37,17 @@ function rateLabel(r: number) {
     <div class="row items-center no-wrap q-gutter-x-xs">
       <q-btn flat round dense icon="record_voice_over" aria-label="Voz">
         <q-tooltip>Voz</q-tooltip>
-        <q-menu anchor="top left" self="bottom left" class="tts-menu">
-          <q-list dense style="min-width: 220px">
+        <q-menu anchor="top left" self="bottom left" max-height="70vh" @before-show="ra.refreshVoices()">
+          <q-list dense class="voice-list">
             <q-item-label header>Voz</q-item-label>
             <q-item v-close-popup clickable :active="ra.voiceId == null" @click="ra.setVoice(null)">
-              <q-item-section>Predeterminada del sistema</q-item-section>
+              <q-item-section avatar><q-icon name="auto_awesome" color="accent" /></q-item-section>
+              <q-item-section>
+                <q-item-label>Automática</q-item-label>
+                <q-item-label caption>
+                  La mejor disponible{{ ra.voiceId == null && ra.currentVoice ? `: ${ra.currentVoice.label}` : '' }}
+                </q-item-label>
+              </q-item-section>
             </q-item>
             <q-item
               v-for="v in ra.voices"
@@ -47,11 +57,57 @@ function rateLabel(r: number) {
               :active="ra.voiceId === v.id"
               @click="ra.setVoice(v.id)"
             >
+              <q-item-section avatar>
+                <q-btn
+                  flat
+                  round
+                  dense
+                  icon="play_circle"
+                  color="secondary"
+                  :aria-label="`Escuchar a ${v.label}`"
+                  @click.stop="ra.preview(v.id)"
+                >
+                  <q-tooltip>Escuchar una muestra</q-tooltip>
+                </q-btn>
+              </q-item-section>
               <q-item-section>
-                <q-item-label>{{ v.name }}</q-item-label>
-                <q-item-label caption>{{ v.lang }}</q-item-label>
+                <q-item-label>
+                  {{ v.label }}
+                  <span class="quality" :class="`quality--${v.quality}`">{{ QUALITY_LABEL[v.quality] }}</span>
+                </q-item-label>
+                <q-item-label caption>{{ v.detail }}</q-item-label>
               </q-item-section>
             </q-item>
+
+            <q-separator class="q-my-xs" />
+            <q-expansion-item
+              dense
+              icon="tips_and_updates"
+              label="¿Cómo consigo una voz más natural?"
+              header-class="text-accent"
+              :default-opened="!hasGoodVoice"
+            >
+              <div class="help q-px-md q-pb-sm">
+                <p v-if="!hasGoodVoice" class="q-mb-xs">Ahora solo tienes voces básicas. Las mejores son gratis:</p>
+                <div class="text-weight-bold q-mb-xs">{{ help.title }}</div>
+                <ol class="q-pl-md q-my-none">
+                  <li v-for="step in help.steps" :key="step">{{ step }}</li>
+                </ol>
+                <div class="row q-gutter-sm q-mt-sm">
+                  <q-btn
+                    v-if="help.canOpenInstaller"
+                    unelevated
+                    dense
+                    no-caps
+                    color="accent"
+                    icon="download"
+                    label="Descargar voces"
+                    @click="openVoiceInstaller()"
+                  />
+                  <q-btn flat dense no-caps color="secondary" icon="refresh" label="Actualizar lista" @click="ra.refreshVoices()" />
+                </div>
+              </div>
+            </q-expansion-item>
           </q-list>
         </q-menu>
       </q-btn>
@@ -132,6 +188,38 @@ function rateLabel(r: number) {
   -webkit-box-orient: vertical;
   overflow: hidden;
   text-align: center;
+}
+.voice-list {
+  width: min(340px, 90vw);
+}
+.quality {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 0 6px;
+  border-radius: 8px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  vertical-align: middle;
+}
+.quality--natural {
+  background: rgba(242, 158, 56, 0.2);
+  color: #b86b12;
+}
+.quality--good {
+  background: rgba(79, 157, 126, 0.18);
+  color: #2f7a5c;
+}
+.quality--standard {
+  background: rgba(128, 128, 128, 0.15);
+  color: #777;
+}
+.quality--robotic {
+  background: rgba(217, 83, 79, 0.15);
+  color: #b2403c;
+}
+.help {
+  font-size: 0.85rem;
+  line-height: 1.4;
 }
 .rate-btn {
   font-weight: 700;

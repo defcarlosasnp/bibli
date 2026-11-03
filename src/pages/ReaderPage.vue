@@ -483,7 +483,15 @@ const readAloud = reactive(
       },
     },
     {
-      onStart: () => lumiSay('¡Ponte cómodo, yo te leo! 🎧', 'happy', 3500),
+      onStart: () => {
+        const onlyBasic = !readAloud.voices.some((v) => v.quality === 'natural' || v.quality === 'good')
+        if (onlyBasic && !localStorage.getItem('bibli.tts.voiceTip')) {
+          localStorage.setItem('bibli.tts.voiceTip', '1')
+          lumiSay('¿Mi voz suena robótica? 🤖 Toca 🗣️ y te explico cómo conseguir una más natural, gratis', 'happy', 9000)
+        } else {
+          lumiSay('¡Ponte cómodo, yo te leo! 🎧', 'happy', 3500)
+        }
+      },
       onChunkEnd: () => {
         if (book.value?.format === 'epub') lumiSay('¡Fin del capítulo! Seguimos con el siguiente 🎶', 'excited', 3500)
       },

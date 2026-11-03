@@ -3,7 +3,8 @@
     "allow": [
       "PowerShell(npm install @fontsource-variable/fraunces @fontsource-variable/nunito canvas-confetti 2>&1)",
       "PowerShell(npm install -D @types/canvas-confetti 2>&1)",
-      "PowerShell(npm run build 2>&1 | Select-String -Pattern \"error|✓ built\"; Select-String -Path dist/index.html -Pattern 'src=|href=' | ForEach-Object { $_.Line.Trim\\(\\) })"
+      "PowerShell(npm run build 2>&1 | Select-String -Pattern \"error|✓ built\"; Select-String -Path dist/index.html -Pattern 'src=|href=' | ForEach-Object { $_.Line.Trim\\(\\) })",
+      "PowerShell(& \"C:\\\\Users\\\\CARLOS~1.CAL\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-carlos-calderon-Downloads-bibli\\\\d7aac959-7bcb-43db-9d89-e641ff2e4564\\\\scratchpad\\\\cdp-eval.ps1\" -Expression \"Capacitor.Plugins.TextToSpeech.getSupportedVoices\\(\\).then\\(r => r.voices.filter\\(v => /^es/i.test\\(v.lang\\)\\).map\\(v => JSON.stringify\\(v\\)\\).join\\('\\\\n'\\)\\)\")"
     ]
   }
 }

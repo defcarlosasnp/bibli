@@ -1,0 +1,69 @@
+:root {
+  --font-display: 'Fraunces Variable', Georgia, serif;
+  --font-body: 'Nunito Variable', system-ui, sans-serif;
+
+  --paper: #fbf5ec;
+  --paper-2: #f3e7d6;
+  --ink: #3b2a20;
+  --ink-soft: #7a6555;
+  --accent: #f29e38;
+  --accent-2: #e2654a;
+  --leaf: #4f9d7e;
+  --wood-light: #b07a4f;
+  --wood-dark: #6e4529;
+  --card: #ffffff;
+  --shadow: 0 10px 30px -12px rgba(80, 50, 20, 0.35);
+}
+
+.body--dark {
+  --paper: #1d1714;
+  --paper-2: #2a211c;
+  --ink: #f4e9dc;
+  --ink-soft: #b9a593;
+  --card: #2c2420;
+  --wood-light: #7a5236;
+  --wood-dark: #3f2717;
+  --shadow: 0 10px 30px -12px rgba(0, 0, 0, 0.7);
+}
+
+html,
+body,
+#app {
+  height: 100%;
+}
+
+body {
+  font-family: var(--font-body);
+  color: var(--ink);
+  background: var(--paper);
+}
+
+.font-display {
+  font-family: var(--font-display);
+}
+
+/* Transiciones entre pantallas */
+.page-enter-active,
+.page-leave-active {
+  transition:
+    opacity 0.25s ease,
+    transform 0.25s ease;
+}
+.page-enter-from {
+  opacity: 0;
+  transform: translateY(12px);
+}
+.page-leave-to {
+  opacity: 0;
+  transform: scale(0.98);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

@@ -1,0 +1,9 @@
+node_modules
+dist
+*.log
+
+# Editores
+.idea
+.DS_Store
+
+# android/ e ios/ se versionan (Capacitor lo recomienda); cada uno trae su propio .gitignore

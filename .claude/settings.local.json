@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(npm install @fontsource-variable/fraunces @fontsource-variable/nunito canvas-confetti 2>&1)",
+      "PowerShell(npm install -D @types/canvas-confetti 2>&1)",
+      "PowerShell(npm run build 2>&1 | Select-String -Pattern \"error|✓ built\"; Select-String -Path dist/index.html -Pattern 'src=|href=' | ForEach-Object { $_.Line.Trim\\(\\) })"
+    ]
+  }
+}

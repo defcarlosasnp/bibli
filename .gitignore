@@ -2,8 +2,9 @@ node_modules
 dist
 *.log
 
-# Editores
+# Editores y configuración local
 .idea
 .DS_Store
+.claude/settings.local.json
 
 # android/ e ios/ se versionan (Capacitor lo recomienda); cada uno trae su propio .gitignore

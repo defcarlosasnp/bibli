@@ -237,11 +237,16 @@ async function initEpub(data: ArrayBuffer, meta: Book) {
   rendition.value.themes.register('night', epubThemes.night)
   rendition.value.themes.select(night.value ? 'night' : 'day')
 
+  // Mientras epub.js genera las ubicaciones, percentageFromCfi devuelve 0 (no null): hasta que
+  // terminen no hay porcentaje fiable, y guardarlo machacaría el progreso real del libro.
+  let locationsReady = false
+  const percentAt = (cfi: string) => (locationsReady ? epub.value!.locations.percentageFromCfi(cfi) : null)
+
+  epubPercent.value = meta.progress || null
   rendition.value.on('relocated', (loc: { start: { cfi: string; href: string } }) => {
     const cfi = loc.start.cfi
-    const locations = epub.value?.locations
-    const pct = locations?.length() ? locations.percentageFromCfi(cfi) : null
-    epubPercent.value = pct
+    const pct = percentAt(cfi)
+    if (pct != null) epubPercent.value = pct
     currentPosition.value = cfi
     currentLabel.value = epubLabel(loc.start.href, pct)
     saveProgress(cfi, pct)
@@ -253,10 +258,13 @@ async function initEpub(data: ArrayBuffer, meta: Book) {
   // Generar las ubicaciones permite calcular el % leído; puede tardar en libros grandes.
   await epub.value.ready
   await epub.value.locations.generate(1600)
+  locationsReady = true
   const current = rendition.value.currentLocation() as unknown as { start?: { cfi: string; href: string } }
   if (current?.start) {
-    epubPercent.value = epub.value.locations.percentageFromCfi(current.start.cfi)
-    currentLabel.value = epubLabel(current.start.href, epubPercent.value)
+    const pct = percentAt(current.start.cfi)
+    epubPercent.value = pct
+    currentLabel.value = epubLabel(current.start.href, pct)
+    saveProgress(current.start.cfi, pct)
   }
 }
 

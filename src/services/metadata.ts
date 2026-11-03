@@ -9,6 +9,24 @@ export interface ExtractedMetadata {
 }
 
 const COVER_WIDTH = 300
+/** epub.js no rechaza sus promesas con algunos EPUB dañados: se quedan pendientes para siempre. */
+const METADATA_TIMEOUT_MS = 15_000
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`Tiempo agotado (${ms} ms)`)), ms)
+    promise.then(
+      (value) => {
+        clearTimeout(timer)
+        resolve(value)
+      },
+      (err) => {
+        clearTimeout(timer)
+        reject(err)
+      },
+    )
+  })
+}
 
 export function detectFormat(file: File): BookFormat | null {
   const name = file.name.toLowerCase()
@@ -33,7 +51,7 @@ export async function extractMetadata(
 ): Promise<ExtractedMetadata> {
   const fallback = { title: titleFromFileName(fileName), author: '', cover: null }
   try {
-    const meta = format === 'pdf' ? await extractPdf(data) : await extractEpub(data)
+    const meta = await withTimeout(format === 'pdf' ? extractPdf(data) : extractEpub(data), METADATA_TIMEOUT_MS)
     return {
       title: meta.title?.trim() || fallback.title,
       author: meta.author?.trim() || '',

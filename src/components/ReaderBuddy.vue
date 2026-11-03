@@ -58,7 +58,7 @@ defineExpose({ say })
 <template>
   <div
     class="reader-buddy"
-    :class="{ 'reader-buddy--talking': talking, 'reader-buddy--listening': listening }"
+    :class="{ 'reader-buddy--talking': talking }"
     :style="bottom ? { bottom: `${bottom}px` } : undefined"
   >
     <transition name="pop">
@@ -78,14 +78,11 @@ defineExpose({ say })
   align-items: flex-end;
   gap: 6px;
   pointer-events: none;
-  transform: translateY(46px);
+  /* Sentado sobre la barra inferior: si baja más, tapa el botón de página siguiente */
+  transform: translateY(6px);
   transition:
     transform 0.45s cubic-bezier(0.3, 1.5, 0.5, 1),
     bottom 0.3s ease;
-}
-/* con el reproductor abierto, Lumi se sienta encima para no tapar el subtítulo */
-.reader-buddy--listening {
-  transform: translateY(6px);
 }
 .reader-buddy--talking {
   transform: translateY(0);

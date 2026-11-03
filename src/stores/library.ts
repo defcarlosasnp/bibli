@@ -3,6 +3,7 @@ import { computed, ref } from 'vue'
 import { liveQuery } from 'dexie'
 import { db, type Book } from '@/db'
 import { detectFormat, extractMetadata, sha256 } from '@/services/metadata'
+import { epubToUtf8 } from '@/services/epubEncoding'
 
 export type SortKey = 'title' | 'author' | 'addedAt' | 'lastOpenedAt'
 export type ViewMode = 'grid' | 'list'
@@ -77,12 +78,14 @@ export const useLibraryStore = defineStore('library', () => {
         result.unsupported++
         continue
       }
-      const data = await file.arrayBuffer()
-      const hash = await sha256(data)
+      const original = await file.arrayBuffer()
+      // El hash es del archivo original, para detectar duplicados aunque se convierta
+      const hash = await sha256(original)
       if (await db.books.where('hash').equals(hash).count()) {
         result.duplicates++
         continue
       }
+      const data = format === 'epub' ? await epubToUtf8(original).catch(() => original) : original
       const meta = await extractMetadata(format, data, file.name)
       await db.transaction('rw', db.books, db.files, async () => {
         const id = await db.books.add({

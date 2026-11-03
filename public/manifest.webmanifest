@@ -1,0 +1,20 @@
+{
+  "name": "Bibli — tu biblioteca",
+  "short_name": "Bibli",
+  "description": "Tu biblioteca local de libros PDF y EPUB, con Lumi, un búho lector.",
+  "lang": "es",
+  "id": "./",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#fbf5ec",
+  "theme_color": "#fbf5ec",
+  "categories": ["books", "education"],
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}

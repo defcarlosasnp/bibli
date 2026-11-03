@@ -1,6 +1,7 @@
 import { createApp } from 'vue'
 import { createPinia } from 'pinia'
 import { Quasar, Notify, Dialog } from 'quasar'
+import { Capacitor } from '@capacitor/core'
 import quasarLang from 'quasar/lang/es'
 import '@quasar/extras/material-icons/material-icons.css'
 import '@fontsource-variable/fraunces'
@@ -31,3 +32,10 @@ createApp(App)
   .use(createPinia())
   .use(router)
   .mount('#app')
+
+// Web instalada (PWA): funciona sin conexión. En la app nativa los archivos ya van dentro del APK.
+if (import.meta.env.PROD && 'serviceWorker' in navigator && !Capacitor.isNativePlatform()) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('./sw.js').catch((err) => console.warn('Service worker:', err))
+  })
+}

@@ -600,6 +600,8 @@ function removeBook(book: Book) {
 
 .fab {
   animation: pop 0.5s cubic-bezier(0.3, 1.6, 0.5, 1) 0.6s backwards;
+  /* que no quede encima de la barra de inicio del iPhone */
+  margin-bottom: var(--q-safe-area-inset-bottom, 0px);
 }
 .drop-overlay {
   position: fixed;

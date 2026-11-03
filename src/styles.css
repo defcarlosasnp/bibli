@@ -42,6 +42,14 @@ body {
   font-family: var(--font-display);
 }
 
+/* Notch en horizontal: arriba y abajo los gestiona Quasar (body.q-safe-area-padding) */
+.q-header,
+.q-footer,
+.q-page-container {
+  padding-left: env(safe-area-inset-left, 0px);
+  padding-right: env(safe-area-inset-right, 0px);
+}
+
 /* Transiciones entre pantallas */
 .page-enter-active,
 .page-leave-active {

@@ -11,6 +11,15 @@ npm install
 npm run dev
 ```
 
+## Web instalable (PWA)
+
+La web publicada en https://defcarlosasnp.github.io/bibli/ se puede instalar y funciona sin conexión:
+
+- **iPhone / iPad:** ábrela en Safari → Compartir → *Añadir a pantalla de inicio*.
+- **Android / escritorio (Chrome, Edge):** menú → *Instalar app*.
+
+`npm run build` genera `dist/sw.js` a partir de `src/sw.js` con la lista de archivos del build (plugin en `vite.config.ts`). El service worker solo se registra en producción y fuera de la app nativa.
+
 ## Android
 
 Requiere Android Studio.
@@ -29,6 +38,7 @@ src/
   db.ts                  Esquema Dexie: tabla `books` (metadatos) y `files` (binarios)
   services/metadata.ts   Extrae título, autor y portada de PDF/EPUB
   services/pdf.ts        Configuración de pdf.js
+  sw.js                  Service worker (plantilla) para usar la web sin conexión
   stores/library.ts      Estado: importar, ordenar, filtrar, editar, eliminar
   pages/LibraryPage.vue  Estantería con búsqueda, orden y arrastrar/soltar
   pages/ReaderPage.vue   Lector PDF/EPUB que recuerda la posición

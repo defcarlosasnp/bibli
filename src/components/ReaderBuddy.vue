@@ -46,8 +46,8 @@ defineExpose({ say })
 <style scoped>
 .reader-buddy {
   position: fixed;
-  right: 10px;
-  bottom: 60px;
+  right: calc(10px + env(safe-area-inset-right, 0px));
+  bottom: calc(60px + var(--q-safe-area-inset-bottom, 0px));
   z-index: 2000;
   display: flex;
   align-items: flex-end;

@@ -4,8 +4,23 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>Bibli</title>
+    <meta name="description" content="Tu biblioteca local de libros PDF y EPUB, con Lumi, un búho lector." />
+
+    <!-- PWA: instalable y con funcionamiento sin conexión -->
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+    <meta name="theme-color" content="#fbf5ec" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#1d1714" media="(prefers-color-scheme: dark)" />
+
+    <!-- iPhone / iPad: "Añadir a pantalla de inicio" -->
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <meta name="apple-mobile-web-app-title" content="Bibli" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   </head>
-  <body>
+  <!-- q-safe-area-padding: Quasar respeta el notch y la barra inferior en cabecera, pie, diálogos y avisos -->
+  <body class="q-safe-area-padding">
     <div id="app"></div>
     <script type="module" src="/src/main.ts"></script>
   </body>

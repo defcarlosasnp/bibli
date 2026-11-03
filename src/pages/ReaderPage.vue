@@ -1,13 +1,17 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, shallowRef, nextTick, toRaw } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowRef, nextTick, toRaw } from 'vue'
 import { useRouter } from 'vue-router'
 import { useQuasar } from 'quasar'
 import ePub, { EpubCFI, type Book as EpubBook, type Rendition, type NavItem } from 'epubjs'
-import type { PDFDocumentProxy, RenderTask } from 'pdfjs-dist'
+import { Util, type PDFDocumentProxy, type PageViewport, type RenderTask } from 'pdfjs-dist'
+import type { TextItem } from 'pdfjs-dist/types/src/display/api'
 import { db, type Book, type Bookmark } from '@/db'
 import { openPdf } from '@/services/pdf'
 import { FINISHED_THRESHOLD, celebrate, recordReadingDay } from '@/services/stats'
+import { cleanForSpeech, speechSupported, splitSentences } from '@/services/speech'
+import { useReadAloud, type Sentence } from '@/composables/useReadAloud'
 import ReaderBuddy from '@/components/ReaderBuddy.vue'
+import ReadAloudBar from '@/components/ReadAloudBar.vue'
 
 const props = defineProps<{ id: string }>()
 const router = useRouter()
@@ -30,6 +34,8 @@ const pdf = shallowRef<PDFDocumentProxy>()
 const page = ref(1)
 const pageCount = ref(0)
 const zoom = ref(1)
+/** Viewport de la página en píxeles CSS (sin devicePixelRatio), para colocar el resaltado. */
+const pdfViewport = shallowRef<PageViewport>()
 let renderTask: RenderTask | null = null
 let destroyPdf: (() => Promise<void>) | undefined
 
@@ -141,14 +147,14 @@ onMounted(async () => {
   if (meta.format === 'pdf') await initPdf(data, meta)
   else await initEpub(data, meta)
   window.addEventListener('keydown', onKey)
-  window.addEventListener('resize', onResize)
+  resizeObserver.observe(viewport.value!)
   greetReader(meta)
 })
 
 onBeforeUnmount(() => {
   clearInterval(sessionTimer)
   window.removeEventListener('keydown', onKey)
-  window.removeEventListener('resize', onResize)
+  resizeObserver.disconnect()
   renderTask?.cancel()
   destroyPdf?.()
   epub.value?.destroy()
@@ -188,19 +194,21 @@ async function renderPdfPage(dir = 0) {
   renderTask = p.render({ canvas: canvas.value, viewport: vp })
   try {
     await renderTask.promise
-    if (dir) animateTurn(canvas.value, dir)
+    pdfViewport.value = p.getViewport({ scale: fit })
+    if (dir) animateTurn(canvas.value?.parentElement ?? undefined, dir)
   } catch (err) {
     if ((err as Error)?.name !== 'RenderingCancelledException') throw err
   }
 }
 
-function goToPdfPage(n: number) {
+function goToPdfPage(n: number, byReadAloud = false) {
   const target = Math.min(Math.max(1, n), pageCount.value)
   if (!target || target === page.value) return
   const dir = Math.sign(target - page.value)
   setPdfPage(target)
   saveProgress(String(target), target / pageCount.value)
   renderPdfPage(dir)
+  if (!byReadAloud) readAloud.jump()
 }
 
 function onPageInput(e: Event) {
@@ -272,6 +280,227 @@ function setFontSize(delta: number) {
   rendition.value?.themes.fontSize(`${fontSize.value}%`)
 }
 
+// ---------- Lectura en voz alta ----------
+
+// PDF: el texto viene en trozos (TextItem, normalmente una línea) con su posición. Se resalta la parte
+// de cada trozo que ocupa la frase, repartiendo el ancho de forma proporcional a los caracteres.
+interface PdfHighlightPart {
+  item: TextItem
+  /** Fracción del trozo donde empieza y acaba la frase (0–1). */
+  from: number
+  to: number
+}
+const pdfHighlight = shallowRef<PdfHighlightPart[]>([])
+const pdfHighlightRects = computed(() => {
+  const vp = pdfViewport.value
+  if (!vp) return []
+  return pdfHighlight.value.map(({ item, from, to }) => {
+    const tx = Util.transform(vp.transform, item.transform)
+    const h = Math.hypot(tx[2], tx[3])
+    const w = item.width * vp.scale
+    return {
+      left: `${tx[4] + w * from - 2}px`,
+      top: `${tx[5] - h}px`,
+      width: `${w * (to - from) + 4}px`,
+      height: `${h * 1.25}px`,
+    }
+  })
+})
+
+async function pdfSentences(): Promise<Sentence[]> {
+  if (!pdf.value) return []
+  const p = await pdf.value.getPage(page.value)
+  const { items } = await p.getTextContent()
+  let text = ''
+  const spans: { start: number; end: number; item: TextItem }[] = []
+  let prev: TextItem | null = null
+  let pendingEOL = false
+  for (const it of items) {
+    if (!('str' in it)) continue
+    if (it.str) {
+      if (prev && pendingEOL) {
+        // Un salto grande entre líneas es un párrafo nuevo; "pala-" + "bra" se une.
+        const paragraph = Math.abs(prev.transform[5] - it.transform[5]) > Math.max(prev.height, it.height) * 1.8
+        if (!paragraph && /\p{Ll}-$/u.test(text) && /^\p{Ll}/u.test(it.str)) text = text.slice(0, -1)
+        else text += paragraph ? '\n' : ' '
+      }
+      const start = text.length
+      text += it.str
+      spans.push({ start, end: text.length, item: it })
+      prev = it
+      pendingEOL = false
+    }
+    if (it.hasEOL) pendingEOL = true
+  }
+  return splitSentences(text).map(({ start, end }) => {
+    const parts = spans
+      .filter((s) => s.end > start && s.start < end)
+      .map((s) => {
+        const len = s.end - s.start
+        return { item: s.item, from: Math.max(0, start - s.start) / len, to: Math.min(len, end - s.start) / len }
+      })
+    return { text: cleanForSpeech(text.slice(start, end)), show: () => (pdfHighlight.value = parts) }
+  })
+}
+
+// EPUB: se recorre el HTML del capítulo y cada frase se resalta con una anotación de epub.js.
+interface EpubContents {
+  document: Document
+  sectionIndex: number
+  cfiFromRange(range: Range): string
+}
+interface EpubLocation {
+  start: { cfi: string; index: number }
+  end: { cfi: string }
+}
+
+const BLOCK_TAGS = 'p,div,li,h1,h2,h3,h4,h5,h6,blockquote,td,th,dt,dd,pre,figcaption,section,article,aside,header,footer'
+const cfiTool = new EpubCFI()
+let epubMark: string | null = null
+
+function setEpubMark(cfi: string | null) {
+  const r = rendition.value
+  if (!r) return
+  if (epubMark) r.annotations.remove(epubMark, 'highlight')
+  epubMark = cfi
+  if (cfi) {
+    r.annotations.highlight(cfi, {}, undefined, 'tts-hl', {
+      fill: '#f29e38',
+      'fill-opacity': '0.35',
+      'mix-blend-mode': 'normal',
+    })
+  }
+}
+
+/** Frases del documento con su rango en el DOM. Los bloques (párrafos, títulos…) cortan frase. */
+function documentSentences(doc: Document): { text: string; range: Range }[] {
+  let text = ''
+  const nodes: { node: Text; start: number }[] = []
+  let lastBlock: Element | null = null
+  const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT)
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+    if (n.nodeType === Node.ELEMENT_NODE) {
+      if ((n as Element).localName === 'br') text += '\n'
+      continue
+    }
+    const parent = n.parentElement
+    if (!parent || parent.closest('script,style,noscript')) continue
+    const block = parent.closest(BLOCK_TAGS)
+    if (block !== lastBlock) {
+      text += '\n'
+      lastBlock = block
+    }
+    nodes.push({ node: n as Text, start: text.length })
+    text += n.nodeValue ?? ''
+  }
+
+  /** Nodo de texto y desplazamiento de una posición del texto concatenado. */
+  function pointAt(offset: number, isEnd: boolean): [Text, number] {
+    let lo = 0
+    let hi = nodes.length - 1
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1
+      if (isEnd ? nodes[mid].start < offset : nodes[mid].start <= offset) lo = mid
+      else hi = mid - 1
+    }
+    const { node, start } = nodes[lo]
+    return [node, Math.min(offset - start, node.length)]
+  }
+
+  return splitSentences(text).map(({ start, end }) => {
+    const range = doc.createRange()
+    range.setStart(...pointAt(start, false))
+    range.setEnd(...pointAt(end, true))
+    return { text: cleanForSpeech(text.slice(start, end)), range }
+  })
+}
+
+async function epubSentences(): Promise<Sentence[]> {
+  const r = rendition.value
+  if (!r) return []
+  const loc = r.currentLocation() as unknown as EpubLocation
+  const all = r.getContents() as unknown as EpubContents[]
+  const contents = all.find((c) => c.sectionIndex === loc?.start?.index) ?? all[0]
+  if (!loc?.start || !contents) return []
+  const sentences = documentSentences(contents.document)
+
+  // Empieza por la primera frase que se ve en la página actual
+  let from = 0
+  try {
+    const pageStart = new EpubCFI(loc.start.cfi).toRange(contents.document)
+    from = sentences.findIndex((s) => pageStart.comparePoint(s.range.endContainer, s.range.endOffset) >= 0)
+    if (from < 0) from = sentences.length
+  } catch {
+    from = 0
+  }
+
+  return sentences.slice(from).map(({ text, range }) => ({
+    text,
+    show: () => {
+      const cfi = contents.cfiFromRange(range)
+      setEpubMark(cfi)
+      // la voz llegó al final de la página: pasar a la siguiente
+      const now = r.currentLocation() as unknown as EpubLocation
+      if (now?.end && cfiTool.compare(cfi, now.end.cfi) > 0) {
+        r.display(cfi).then(() => animateTurn(viewport.value, 1))
+        onPageForward()
+      }
+    },
+  }))
+}
+
+async function epubNextSection(): Promise<boolean> {
+  const r = rendition.value
+  const loc = r?.currentLocation() as unknown as EpubLocation | undefined
+  const next = loc?.start ? epub.value?.spine.get(loc.start.index)?.next() : undefined
+  if (!r || !next) return false
+  await r.display(next.href)
+  return true
+}
+
+const readAloud = reactive(
+  useReadAloud(
+    {
+      load: () => (book.value?.format === 'pdf' ? pdfSentences() : epubSentences()),
+      async advance() {
+        if (book.value?.format === 'epub') return epubNextSection()
+        if (page.value >= pageCount.value) return false
+        goToPdfPage(page.value + 1, true)
+        onPageForward()
+        return true
+      },
+      clear() {
+        pdfHighlight.value = []
+        setEpubMark(null)
+      },
+    },
+    {
+      onStart: () => lumiSay('¡Ponte cómodo, yo te leo! 🎧', 'happy', 3500),
+      onChunkEnd: () => {
+        if (book.value?.format === 'epub') lumiSay('¡Fin del capítulo! Seguimos con el siguiente 🎶', 'excited', 3500)
+      },
+      onSleep: () => lumiSay('Buenas noches 🌙 Te guardé el sitio, mañana seguimos 😴', 'sleepy', 8000),
+      onFinish: () => lumiSay('Y… ¡fin! 📕 Gracias por escuchar conmigo 🦉', 'excited', 6000),
+      onNoText: () => {
+        $q.notify({
+          type: 'warning',
+          message: 'No encuentro texto en estas páginas: parece un PDF escaneado (fotos de las páginas).',
+          timeout: 5000,
+        })
+        lumiSay('Este PDF son fotos de páginas y no las puedo leer en voz alta 😢', 'sleepy', 6000)
+      },
+    },
+  ),
+)
+
+function toggleListening() {
+  if (readAloud.active) readAloud.close()
+  else readAloud.play()
+}
+
+/** Alto real de la barra inferior (crece con el reproductor), para que Lumi se coloque encima. */
+const footerHeight = ref(0)
+
 // ---------- Marcadores ----------
 
 const bookmarks = computed(() => {
@@ -310,7 +539,7 @@ function removeBookmark(bm: Bookmark) {
 
 function goTo(position: string) {
   if (book.value?.format === 'pdf') goToPdfPage(Number(position))
-  else rendition.value?.display(position)
+  else rendition.value?.display(position).then(() => readAloud.jump())
   if (!$q.screen.gt.sm) drawer.value = false
 }
 
@@ -327,30 +556,54 @@ function next() {
     if (page.value >= pageCount.value) return
     goToPdfPage(page.value + 1)
   } else {
-    rendition.value?.next().then(() => animateTurn(viewport.value, 1))
+    rendition.value?.next().then(() => {
+      animateTurn(viewport.value, 1)
+      readAloud.jump()
+    })
   }
   onPageForward()
 }
 
 function prev() {
   if (book.value?.format === 'pdf') goToPdfPage(page.value - 1)
-  else rendition.value?.prev().then(() => animateTurn(viewport.value, -1))
+  else
+    rendition.value?.prev().then(() => {
+      animateTurn(viewport.value, -1)
+      readAloud.jump()
+    })
 }
 
 function onKey(e: KeyboardEvent) {
   if ((e.target as HTMLElement)?.tagName === 'INPUT') return
-  if (e.key === 'ArrowRight' || e.key === 'PageDown') next()
+  if (e.key === ' ' && readAloud.active) {
+    e.preventDefault()
+    readAloud.toggle()
+  } else if (e.key === 'ArrowRight' || e.key === 'PageDown') next()
   else if (e.key === 'ArrowLeft' || e.key === 'PageUp') prev()
   else if (e.key === 'b') toggleBookmark()
   else if (e.key === 'Escape') router.push({ name: 'library' })
 }
 
+/** Ajusta la página cuando cambia el espacio disponible (ventana, giro o reproductor abierto). */
 let resizeTimer: ReturnType<typeof setTimeout> | undefined
-function onResize() {
+let lastSize = ''
+const resizeObserver = new ResizeObserver(([entry]) => {
+  const { width, height } = entry.contentRect
+  const size = `${Math.round(width)}x${Math.round(height)}`
+  if (size === lastSize) return
+  const first = !lastSize
+  lastSize = size
+  if (first) return
   clearTimeout(resizeTimer)
   resizeTimer = setTimeout(() => {
     if (book.value?.format === 'pdf') renderPdfPage()
+    else rendition.value?.resize(Math.round(width), Math.round(height))
   }, 150)
+})
+
+/** El alto de la página es el de la pantalla menos la cabecera y la barra inferior. */
+function pageStyle(offset: number, height: number) {
+  return { height: `${height - offset}px` }
 }
 
 function setZoom(delta: number) {
@@ -456,8 +709,26 @@ function onSwipe({ direction }: { direction?: string }) {
     </q-drawer>
 
     <q-footer class="reader-bar reader-bar--bottom">
+      <q-resize-observer @resize="(s) => (footerHeight = s.height)" />
+      <transition name="tts">
+        <ReadAloudBar
+          v-if="readAloud.active"
+          :ra="readAloud"
+          :chunk-name="book?.format === 'pdf' ? 'esta página' : 'este capítulo'"
+        />
+      </transition>
       <q-toolbar>
         <q-btn flat round icon="chevron_left" @click="prev" />
+        <q-btn
+          v-if="speechSupported && !loading"
+          flat
+          round
+          :icon="readAloud.active ? 'headset_off' : 'headphones'"
+          :class="{ 'listen-btn--on': readAloud.active }"
+          @click="toggleListening"
+        >
+          <q-tooltip>{{ readAloud.active ? 'Dejar de escuchar' : 'Escuchar (Lumi te lee)' }}</q-tooltip>
+        </q-btn>
         <q-space />
         <template v-if="book?.format === 'pdf' && pageCount">
           <q-input
@@ -479,7 +750,7 @@ function onSwipe({ direction }: { direction?: string }) {
     </q-footer>
 
     <q-page-container>
-      <q-page class="reader-page" :class="{ night }">
+      <q-page class="reader-page" :class="{ night }" :style-fn="pageStyle">
         <q-inner-loading :showing="loading" />
         <div
           v-if="!loading"
@@ -488,10 +759,18 @@ function onSwipe({ direction }: { direction?: string }) {
           class="viewport"
           :class="{ 'pdf-viewport': book?.format === 'pdf' }"
         >
-          <canvas v-if="book?.format === 'pdf'" ref="canvas" class="shadow-4" />
+          <div v-if="book?.format === 'pdf'" class="pdf-page">
+            <canvas ref="canvas" class="shadow-4" />
+            <div v-for="(r, i) in pdfHighlightRects" :key="i" class="tts-hl" :style="r" />
+          </div>
         </div>
         <transition name="buddy">
-          <ReaderBuddy v-if="showBuddy && !loading" ref="buddy" />
+          <ReaderBuddy
+            v-if="showBuddy && !loading"
+            ref="buddy"
+            :listening="readAloud.playing"
+            :bottom="footerHeight"
+          />
         </transition>
       </q-page>
     </q-page-container>
@@ -533,7 +812,8 @@ function onSwipe({ direction }: { direction?: string }) {
 }
 .viewport {
   flex: 1;
-  height: calc(100vh - 100px);
+  min-width: 0;
+  height: 100%;
   overflow: hidden;
 }
 .pdf-viewport {
@@ -546,9 +826,41 @@ function onSwipe({ direction }: { direction?: string }) {
 .night .pdf-viewport {
   background: #000;
 }
-.pdf-viewport canvas {
+.pdf-page {
+  position: relative;
   margin: auto;
+}
+.pdf-viewport canvas {
+  display: block;
   background: white;
+}
+/* Frase que se está leyendo en voz alta */
+.tts-hl {
+  position: absolute;
+  border-radius: 3px;
+  background: rgba(242, 158, 56, 0.35);
+  pointer-events: none;
+  transition:
+    left 0.2s,
+    top 0.2s,
+    width 0.2s;
+}
+.night .tts-hl {
+  background: rgba(242, 158, 56, 0.45);
+}
+.listen-btn--on {
+  color: var(--accent);
+}
+.tts-enter-active,
+.tts-leave-active {
+  transition:
+    opacity 0.25s,
+    transform 0.3s cubic-bezier(0.3, 1.3, 0.5, 1);
+}
+.tts-enter-from,
+.tts-leave-to {
+  opacity: 0;
+  transform: translateY(20px);
 }
 /* Invierte la página y rota el tono para que las imágenes conserven colores aproximados. */
 .night .pdf-viewport canvas {

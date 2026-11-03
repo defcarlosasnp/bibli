@@ -1,15 +1,35 @@
 <script setup lang="ts">
-import { onBeforeUnmount, ref } from 'vue'
+import { computed, onBeforeUnmount, ref } from 'vue'
 import LumiOwl, { type OwlMood } from './LumiOwl.vue'
 import { outfitFor } from '@/services/lumi'
 
+const props = withDefaults(
+  defineProps<{
+    /** La app está leyendo en voz alta: Lumi se pone los auriculares. */
+    listening?: boolean
+    /** Alto de la barra inferior, para colocarse justo encima. */
+    bottom?: number
+  }>(),
+  { listening: false, bottom: 0 },
+)
+
 // En el lector Lumi se pone sus gafas de leer (y conserva el gorro si toca).
-const outfit = { ...outfitFor(), glasses: 'reading' as const }
+const baseOutfit = { ...outfitFor(), glasses: 'reading' as const }
+const outfit = computed(() => ({ ...baseOutfit, headphones: props.listening }))
 
 const talking = ref(false)
 const text = ref('')
 const mood = ref<OwlMood>('idle')
+const shownMood = computed<OwlMood>(() => (!talking.value && props.listening ? 'listening' : mood.value))
 let hideTimer: ReturnType<typeof setTimeout> | undefined
+
+const TAP_LINES = ['¡Hola! Sigo aquí leyendo contigo 🦉', '¿Te está gustando? 📖', 'Shhh… estoy concentrado 🤓']
+const LISTENING_TAP_LINES = [
+  '🎶 ¡Me encanta esta parte!',
+  '¿Muy lento? Toca el 1× para cambiar la velocidad ⏩',
+  'Cierra los ojos, yo te aviso si pasa algo emocionante 🎧',
+  '¿Te vas a dormir? Pon el temporizador 🌙',
+]
 
 function say(message: string, m: OwlMood = 'happy', ms = 5000) {
   text.value = message
@@ -25,8 +45,9 @@ function hide() {
 }
 
 function onTap() {
-  if (talking.value) hide()
-  else say(['¡Hola! Sigo aquí leyendo contigo 🦉', '¿Te está gustando? 📖', 'Shhh… estoy concentrado 🤓'][Math.floor(Math.random() * 3)], 'happy', 3000)
+  if (talking.value) return hide()
+  const lines = props.listening ? LISTENING_TAP_LINES : TAP_LINES
+  say(lines[Math.floor(Math.random() * lines.length)], 'happy', 3000)
 }
 
 onBeforeUnmount(() => clearTimeout(hideTimer))
@@ -35,11 +56,15 @@ defineExpose({ say })
 </script>
 
 <template>
-  <div class="reader-buddy" :class="{ 'reader-buddy--talking': talking }">
+  <div
+    class="reader-buddy"
+    :class="{ 'reader-buddy--talking': talking, 'reader-buddy--listening': listening }"
+    :style="bottom ? { bottom: `${bottom}px` } : undefined"
+  >
     <transition name="pop">
       <div v-if="talking" class="bubble" @click="hide">{{ text }}</div>
     </transition>
-    <LumiOwl :size="72" :mood="mood" :outfit="outfit" class="owl" @click="onTap" />
+    <LumiOwl :size="72" :mood="shownMood" :outfit="outfit" class="owl" @click="onTap" />
   </div>
 </template>
 
@@ -54,7 +79,13 @@ defineExpose({ say })
   gap: 6px;
   pointer-events: none;
   transform: translateY(46px);
-  transition: transform 0.45s cubic-bezier(0.3, 1.5, 0.5, 1);
+  transition:
+    transform 0.45s cubic-bezier(0.3, 1.5, 0.5, 1),
+    bottom 0.3s ease;
+}
+/* con el reproductor abierto, Lumi se sienta encima para no tapar el subtítulo */
+.reader-buddy--listening {
+  transform: translateY(6px);
 }
 .reader-buddy--talking {
   transform: translateY(0);

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { Outfit } from '@/services/lumi'
 
-export type OwlMood = 'idle' | 'happy' | 'excited' | 'sleepy'
+export type OwlMood = 'idle' | 'happy' | 'excited' | 'sleepy' | 'listening'
 
 withDefaults(defineProps<{ mood?: OwlMood; size?: number; outfit?: Outfit }>(), {
   mood: 'idle',
@@ -45,7 +45,7 @@ withDefaults(defineProps<{ mood?: OwlMood; size?: number; outfit?: Outfit }>(), 
         <circle cx="77" cy="56" r="19" fill="#fbeedb" />
 
         <!-- ojos -->
-        <g v-if="mood === 'happy'" stroke="#3b2a20" stroke-width="4" fill="none" stroke-linecap="round">
+        <g v-if="mood === 'happy' || mood === 'listening'" stroke="#3b2a20" stroke-width="4" fill="none" stroke-linecap="round">
           <path d="M34 58 q9 -10 18 0" />
           <path d="M68 58 q9 -10 18 0" />
         </g>
@@ -96,6 +96,15 @@ withDefaults(defineProps<{ mood?: OwlMood; size?: number; outfit?: Outfit }>(), 
           <path d="M30 54 L22 50 M90 54 L98 50" stroke-linecap="round" />
         </g>
 
+        <!-- auriculares (antes que los gorros, para que el gorro tape la diadema) -->
+        <g v-if="outfit.headphones" class="headphones">
+          <path d="M18 58 C16 12 104 12 102 58" stroke="#4f9d7e" stroke-width="6" fill="none" stroke-linecap="round" />
+          <rect x="8" y="46" width="18" height="26" rx="8" fill="#e2654a" />
+          <rect x="94" y="46" width="18" height="26" rx="8" fill="#e2654a" />
+          <rect x="12" y="51" width="6" height="16" rx="3" fill="#f29e38" />
+          <rect x="102" y="51" width="6" height="16" rx="3" fill="#f29e38" />
+        </g>
+
         <!-- gorros -->
         <g v-if="outfit.hat === 'nightcap' || outfit.hat === 'santa'" class="hat">
           <path
@@ -125,6 +134,11 @@ withDefaults(defineProps<{ mood?: OwlMood; size?: number; outfit?: Outfit }>(), 
       <g v-if="mood === 'sleepy'" class="zzz" fill="#7a6555" font-family="Fraunces Variable, serif" font-weight="700">
         <text x="98" y="30" font-size="14">z</text>
         <text x="106" y="18" font-size="10">z</text>
+      </g>
+      <g v-if="mood === 'listening'" class="notes" fill="#4f9d7e" font-weight="700">
+        <text x="100" y="34" font-size="16">♪</text>
+        <text x="6" y="40" font-size="14">♫</text>
+        <text x="108" y="20" font-size="11">♪</text>
       </g>
       <g v-if="mood === 'excited'" class="sparkles" fill="#f29e38">
         <path d="M10 30 l3 -8 l3 8 l8 3 l-8 3 l-3 8 l-3 -8 l-8 -3 Z" />
@@ -188,6 +202,22 @@ svg {
 }
 .owl--sleepy .body-group {
   animation: breathe 4s ease-in-out infinite;
+}
+.owl--listening .body-group {
+  animation: groove 1.2s ease-in-out infinite;
+}
+.owl--listening .headphones {
+  transform-origin: 60px 40px;
+  animation: pompom 0.6s ease-in-out infinite;
+}
+.notes text {
+  animation: note 2.4s ease-out infinite;
+}
+.notes text:nth-child(2) {
+  animation-delay: 0.8s;
+}
+.notes text:nth-child(3) {
+  animation-delay: 1.6s;
 }
 .zzz text {
   animation: zzz 2.4s ease-in-out infinite;
@@ -299,6 +329,34 @@ svg {
   }
   50% {
     transform: scale(1.03, 0.98);
+  }
+}
+@keyframes groove {
+  0%,
+  100% {
+    transform: rotate(-4deg) translateY(0);
+  }
+  25% {
+    transform: rotate(0deg) translateY(-3px);
+  }
+  50% {
+    transform: rotate(4deg) translateY(0);
+  }
+  75% {
+    transform: rotate(0deg) translateY(-3px);
+  }
+}
+@keyframes note {
+  0% {
+    opacity: 0;
+    transform: translate(0, 6px) rotate(-10deg);
+  }
+  30% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(8px, -18px) rotate(12deg);
   }
 }
 @keyframes zzz {

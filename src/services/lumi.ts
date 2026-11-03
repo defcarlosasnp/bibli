@@ -4,6 +4,8 @@ export type LumiGlasses = 'sun' | 'reading'
 export interface Outfit {
   hat?: LumiHat
   glasses?: LumiGlasses
+  /** Mientras la app lee en voz alta. */
+  headphones?: boolean
 }
 
 export interface OutfitInfo extends Outfit {

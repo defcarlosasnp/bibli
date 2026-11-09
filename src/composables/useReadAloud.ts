@@ -1,5 +1,5 @@
 import { computed, onBeforeUnmount, ref } from 'vue'
-import { VOICE_SAMPLE, listVoices, speak, stopSpeaking, type Voice } from '@/services/speech'
+import { VOICE_SAMPLE, listVoices, speak, speakWithin, stopSpeaking, type Voice } from '@/services/speech'
 
 export interface Sentence {
   text: string
@@ -15,7 +15,34 @@ export interface ReadAloudSource {
   advance(): Promise<boolean>
   /** Quita el resaltado. */
   clear(): void
+
+  // Para leer con la pantalla bloqueada (Android): el servicio nativo lee las frases siguientes
+  /** Identificador de la página (PDF) o capítulo (EPUB) actual. */
+  currentKey?(): unknown
+  /** Frases de las próximas páginas o capítulos, sin moverse de donde está. */
+  upcoming?(count: number): Promise<{ key: unknown; texts: string[] }[]>
+  /** Ir al principio de una página o capítulo (al volver a la app). */
+  goToChunk?(key: unknown): Promise<void>
 }
+
+/** Frases entregadas al servicio nativo y de qué página/capítulo sale cada una. */
+export interface BackgroundPlan {
+  sentences: string[]
+  map: { key: unknown; index: number }[]
+}
+
+/** Lo que devuelve el servicio al volver: por qué frase de la cola iba. */
+export interface BackgroundState {
+  active: boolean
+  index: number
+  playing: boolean
+  finished: boolean
+}
+
+/** Páginas o capítulos que se preparan por adelantado al bloquear la pantalla, y audio máximo. */
+export const LOOKAHEAD_PDF_PAGES = 40
+export const LOOKAHEAD_EPUB_CHAPTERS = 4
+export const BACKGROUND_MAX_SECONDS = 90 * 60
 
 export interface ReadAloudHooks {
   onStart?: () => void
@@ -24,6 +51,8 @@ export interface ReadAloudHooks {
   onSleep?: () => void
   /** Varias páginas seguidas sin texto: probablemente un PDF escaneado. */
   onNoText?: () => void
+  /** La voz de internet no respondió y se cambió a la del dispositivo. */
+  onVoiceFallback?: () => void
 }
 
 /** 'chunk' = al acabar la página o el capítulo actual. */
@@ -46,6 +75,19 @@ export function useReadAloud(source: ReadAloudSource, hooks: ReadAloudHooks = {}
     voiceId.value != null && voices.value.some((v) => v.id === voiceId.value) ? voiceId.value : (voices.value[0]?.id ?? null),
   )
   const currentVoice = computed(() => voices.value.find((v) => v.id === effectiveVoiceId.value) ?? null)
+
+  /**
+   * Las voces de internet se cuelgan sin conexión (también cuando Android la corta con la pantalla
+   * bloqueada). Entonces se sigue con la mejor voz del dispositivo hasta la próxima vez que se pulse ▶.
+   */
+  const offline = ref(false)
+  const localVoiceId = computed(() => {
+    const local = voices.value.filter((v) => !v.online)
+    return (local.find((v) => v.lang === currentVoice.value?.lang) ?? local[0])?.id ?? null
+  })
+  const speakingVoiceId = computed(() =>
+    offline.value && currentVoice.value?.online ? localVoiceId.value : effectiveVoiceId.value,
+  )
 
   let chunk: Sentence[] | null = null
   let index = 0
@@ -124,11 +166,19 @@ export function useReadAloud(source: ReadAloudSource, hooks: ReadAloudHooks = {}
         const s = chunk[index]
         sentence.value = s.text
         s.show?.()
-        await speak(s.text, { rate: rate.value, voiceId: effectiveVoiceId.value })
+        const usedOnline = !!currentVoice.value?.online && !offline.value
+        const finished = await speakWithin(s.text, { rate: rate.value, voiceId: speakingVoiceId.value })
         if (id !== runId) return
+        if (!finished && usedOnline && localVoiceId.value) {
+          // Sin conexión: se repite la misma frase con la voz del dispositivo
+          offline.value = true
+          hooks.onVoiceFallback?.()
+          continue
+        }
         spokeAny = true
         index++
-        if (stopAfterSentence) return fallAsleep()
+        // Con la pantalla bloqueada los temporizadores pueden retrasarse: se comprueba la hora también aquí
+        if (stopAfterSentence || (sleepEndsAt.value != null && Date.now() >= sleepEndsAt.value)) return fallAsleep()
       }
       chunk = null
       const more = await source.advance()
@@ -153,6 +203,7 @@ export function useReadAloud(source: ReadAloudSource, hooks: ReadAloudHooks = {}
       hooks.onStart?.()
     }
     playing.value = true
+    offline.value = false // quizá ya vuelve a haber conexión
     keepAwake(true)
     run(++runId)
   }
@@ -213,9 +264,71 @@ export function useReadAloud(source: ReadAloudSource, hooks: ReadAloudHooks = {}
 
   function setVoice(id: string | null) {
     voiceId.value = id
+    offline.value = false
     if (id == null) localStorage.removeItem('bibli.tts.voice')
     else localStorage.setItem('bibli.tts.voice', id)
     restartSentence()
+  }
+
+  // ---------- Pantalla bloqueada (Android) ----------
+
+  /**
+   * Para el bucle de JavaScript (el WebView se congelará) y prepara las frases que leerá el servicio
+   * nativo: lo que queda de la página o capítulo y los siguientes, hasta `maxSeconds` de audio
+   * aproximado, o menos si el temporizador para dormir acaba antes.
+   */
+  async function exportForBackground(maxSeconds: number, chunksAhead: number): Promise<BackgroundPlan | null> {
+    if (!playing.value) return null
+    runId++
+    stopSpeaking()
+    if (!chunk) {
+      chunk = await source.load()
+      index = 0
+    }
+    let budget = maxSeconds
+    if (sleepEndsAt.value != null) budget = Math.min(budget, Math.max(0, (sleepEndsAt.value - Date.now()) / 1000))
+    const plan: BackgroundPlan = { sentences: [], map: [] }
+    let seconds = 0
+    const add = (text: string, key: unknown, i: number) => {
+      plan.sentences.push(text)
+      plan.map.push({ key, index: i })
+      seconds += text.length / (15 * rate.value)
+    }
+    const key = source.currentKey?.()
+    for (let i = index; i < chunk.length && seconds < budget; i++) add(chunk[i].text, key, i)
+    if (sleepMode.value !== 'chunk' && source.upcoming && seconds < budget) {
+      for (const next of await source.upcoming(chunksAhead)) {
+        for (let i = 0; i < next.texts.length && seconds < budget; i++) add(next.texts[i], next.key, i)
+        if (seconds >= budget) break
+      }
+    }
+    return plan
+  }
+
+  /** Al volver a la app: sigue desde la frase por la que iba el servicio. */
+  async function resumeFromBackground(plan: BackgroundPlan, state: BackgroundState) {
+    const sleepDone = state.finished && (sleepMode.value != null)
+    const at = Math.min(state.index, plan.map.length - 1)
+    const target = plan.map[at]
+    if (target) {
+      if (target.key !== source.currentKey?.() && source.goToChunk) {
+        await source.goToChunk(target.key)
+        chunk = await source.load()
+      }
+      index = Math.min(target.index + (state.finished && state.index >= plan.map.length ? 1 : 0), chunk?.length ?? 0)
+    }
+    if (sleepDone) return fallAsleep()
+    if (state.playing && !state.finished) {
+      playing.value = true
+      run(++runId)
+    } else {
+      pause()
+      const s = chunk?.[index]
+      if (s) {
+        sentence.value = s.text
+        s.show?.()
+      }
+    }
   }
 
   /** Vuelve a pedir las voces (p. ej. después de descargar una nueva en los ajustes). */
@@ -258,6 +371,9 @@ export function useReadAloud(source: ReadAloudSource, hooks: ReadAloudHooks = {}
     refreshVoices,
     preview,
     setSleep,
+    speakingVoiceId,
+    exportForBackground,
+    resumeFromBackground,
   }
 }
 

@@ -10,7 +10,7 @@ import { TextToSpeech } from '@capacitor-community/text-to-speech'
 export type VoiceQuality = 'natural' | 'good' | 'standard' | 'robotic'
 
 export interface Voice {
-  /** En la web, el voiceURI; en nativo, el índice dentro de la lista del plugin. */
+  /** El voiceURI de la voz (estable entre reinicios, a diferencia de su posición en la lista). */
   id: string
   /** Nombre legible ("Elvira", "Mónica"…). */
   label: string
@@ -35,6 +35,8 @@ const web = typeof window !== 'undefined' && 'speechSynthesis' in window
 export const speechSupported = native || web
 
 let webVoices: SpeechSynthesisVoice[] = []
+/** voiceURI de cada voz nativa, en el orden del plugin (que usa la posición para elegir). */
+let nativeVoiceUris: string[] = []
 
 interface RawVoice {
   name: string
@@ -119,13 +121,14 @@ export async function listVoices(): Promise<Voice[]> {
   let all: Voice[] = []
   if (native) {
     const { voices } = await TextToSpeech.getSupportedVoices()
+    nativeVoiceUris = voices.map((v) => v.voiceURI)
     // Android solo da nombres genéricos ("Spanish Spain"): se numeran por país, y la versión
     // local y la de red de una misma voz comparten número. "es-ES-language" repite otra voz.
     const numbers = new Map<string, number>()
     const perLang = new Map<string, number>()
-    all = voices.flatMap((v, i) => {
+    all = voices.flatMap((v) => {
       if (/-language$/.test(v.voiceURI) && voices.some((o) => o.lang === v.lang && androidVoiceCode(o))) return []
-      const voice = toVoice(v, String(i))
+      const voice = toVoice(v, v.voiceURI)
       const code = androidVoiceCode(v)
       if (code) {
         const key = `${voice.lang}:${code}`
@@ -212,11 +215,13 @@ let utterance: SpeechSynthesisUtterance | null = null
 /** Lee el texto y se resuelve al terminar o al interrumpirse con stopSpeaking(). */
 export function speak(text: string, { rate, voiceId }: SpeakOptions): Promise<void> {
   if (native) {
+    // El plugin pide la posición en su lista, que puede cambiar: se busca por voiceURI en cada frase
+    const index = voiceId != null ? nativeVoiceUris.indexOf(voiceId) : -1
     return TextToSpeech.speak({
       text,
       lang: 'es-ES',
       rate,
-      voice: voiceId != null ? Number(voiceId) : undefined,
+      voice: index >= 0 ? index : undefined,
       category: 'playback',
     }).catch(() => undefined)
   }
@@ -238,6 +243,23 @@ export function speak(text: string, { rate, voiceId }: SpeakOptions): Promise<vo
 export function stopSpeaking() {
   if (native) TextToSpeech.stop().catch(() => undefined)
   else if (web) speechSynthesis.cancel()
+}
+
+/**
+ * Como speak(), pero si la frase tarda mucho más de lo esperable la corta y devuelve false.
+ * Pasa con las voces de internet cuando se pierde la conexión (o Android la corta con la
+ * pantalla bloqueada): el motor se queda esperando y la frase no termina nunca.
+ */
+export async function speakWithin(text: string, options: SpeakOptions): Promise<boolean> {
+  // ~15 caracteres por segundo a velocidad 1; margen amplio para no cortar voces lentas
+  const expected = text.length / (15 * options.rate)
+  const limitMs = (8 + expected * 2.5) * 1000
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timedOut = new Promise<false>((resolve) => (timer = setTimeout(() => resolve(false), limitMs)))
+  const finished = await Promise.race([speak(text, options).then(() => true as const), timedOut])
+  clearTimeout(timer)
+  if (!finished) stopSpeaking()
+  return finished
 }
 
 // ---------- Texto → frases ----------

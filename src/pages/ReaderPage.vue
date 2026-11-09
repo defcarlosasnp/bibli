@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowRef, nextTick, toRaw } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowRef, nextTick, toRaw, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useQuasar } from 'quasar'
 import ePub, { EpubCFI, type Book as EpubBook, type Rendition, type NavItem } from 'epubjs'
@@ -9,7 +9,22 @@ import { db, type Book, type Bookmark } from '@/db'
 import { openPdf } from '@/services/pdf'
 import { FINISHED_THRESHOLD, celebrate, recordReadingDay } from '@/services/stats'
 import { cleanForSpeech, speechSupported, splitSentences } from '@/services/speech'
-import { useReadAloud, type Sentence } from '@/composables/useReadAloud'
+import {
+  BACKGROUND_MAX_SECONDS,
+  LOOKAHEAD_EPUB_CHAPTERS,
+  LOOKAHEAD_PDF_PAGES,
+  useReadAloud,
+  type BackgroundPlan,
+  type Sentence,
+} from '@/composables/useReadAloud'
+import {
+  backgroundReadingSupported,
+  hideNowPlaying,
+  onMediaAction,
+  showNowPlaying,
+  startBackgroundQueue,
+  takeBackgroundQueue,
+} from '@/services/backgroundReading'
 import ReaderBuddy from '@/components/ReaderBuddy.vue'
 import ReadAloudBar from '@/components/ReadAloudBar.vue'
 
@@ -315,9 +330,9 @@ const pdfHighlightRects = computed(() => {
   })
 })
 
-async function pdfSentences(): Promise<Sentence[]> {
+async function pdfSentences(pageNumber = page.value): Promise<Sentence[]> {
   if (!pdf.value) return []
-  const p = await pdf.value.getPage(page.value)
+  const p = await pdf.value.getPage(pageNumber)
   const { items } = await p.getTextContent()
   let text = ''
   const spans: { start: number; end: number; item: TextItem }[] = []
@@ -466,6 +481,35 @@ async function epubNextSection(): Promise<boolean> {
   return true
 }
 
+function epubSectionIndex(): number | undefined {
+  return (rendition.value?.currentLocation() as unknown as EpubLocation | undefined)?.start?.index
+}
+
+/** Texto de los capítulos siguientes sin mostrarlos (para leer con la pantalla bloqueada). */
+async function epubUpcoming(count: number) {
+  const book = epub.value
+  const current = epubSectionIndex()
+  if (!book || current == null) return []
+  const out: { key: number; texts: string[] }[] = []
+  for (let i = current + 1; out.length < count; i++) {
+    const section = book.spine.get(i)
+    if (!section) break
+    await section.load(book.load.bind(book))
+    const doc = (section as unknown as { document?: Document }).document
+    if (doc?.body) out.push({ key: i, texts: documentSentences(doc).map((s) => s.text) })
+    section.unload()
+  }
+  return out
+}
+
+async function pdfUpcoming(count: number) {
+  const out: { key: number; texts: string[] }[] = []
+  for (let p = page.value + 1; p <= pageCount.value && out.length < count; p++) {
+    out.push({ key: p, texts: (await pdfSentences(p)).map((s) => s.text) })
+  }
+  return out
+}
+
 const readAloud = reactive(
   useReadAloud(
     {
@@ -481,6 +525,15 @@ const readAloud = reactive(
         pdfHighlight.value = []
         setEpubMark(null)
       },
+      currentKey: () => (book.value?.format === 'pdf' ? page.value : epubSectionIndex()),
+      upcoming: (count) => (book.value?.format === 'pdf' ? pdfUpcoming(count) : epubUpcoming(count)),
+      async goToChunk(key) {
+        if (book.value?.format === 'pdf') goToPdfPage(key as number, true)
+        else {
+          const section = epub.value?.spine.get(key as number)
+          if (section) await rendition.value?.display(section.href)
+        }
+      },
     },
     {
       onStart: () => {
@@ -495,6 +548,7 @@ const readAloud = reactive(
       onChunkEnd: () => {
         if (book.value?.format === 'epub') lumiSay('¡Fin del capítulo! Seguimos con el siguiente 🎶', 'excited', 3500)
       },
+      onVoiceFallback: () => lumiSay('Me quedé sin internet 📶 Sigo con la voz del teléfono', 'happy', 5000),
       onSleep: () => lumiSay('Buenas noches 🌙 Te guardé el sitio, mañana seguimos 😴', 'sleepy', 8000),
       onFinish: () => lumiSay('Y… ¡fin! 📕 Gracias por escuchar conmigo 🦉', 'excited', 6000),
       onNoText: () => {
@@ -513,6 +567,55 @@ function toggleListening() {
   if (readAloud.active) readAloud.close()
   else readAloud.play()
 }
+
+// Android: notificación con controles y lectura con la pantalla bloqueada
+watch(
+  () => [readAloud.active, readAloud.playing] as const,
+  ([active, playing]) => {
+    if (!active || !book.value) return hideNowPlaying()
+    showNowPlaying({ title: book.value.title, author: book.value.author, cover: book.value.cover }, playing)
+  },
+)
+const stopMediaActions = onMediaAction((action) => {
+  if (action === 'play') readAloud.play()
+  else if (action === 'pause') readAloud.pause()
+  else if (action === 'next') readAloud.skip(1)
+  else if (action === 'previous') readAloud.skip(-1)
+  else if (action === 'stop') readAloud.close()
+})
+/**
+ * Pantalla bloqueada: Chromium congela el WebView al minuto, así que se entregan las próximas frases
+ * al servicio nativo, que sigue leyendo. Al volver, se retoma desde donde llegó.
+ */
+let backgroundPlan: BackgroundPlan | null = null
+async function onVisibilityChange() {
+  if (!backgroundReadingSupported) return
+  if (document.visibilityState === 'hidden') {
+    if (!readAloud.playing || backgroundPlan) return
+    const chunksAhead = book.value?.format === 'pdf' ? LOOKAHEAD_PDF_PAGES : LOOKAHEAD_EPUB_CHAPTERS
+    const plan = await readAloud.exportForBackground(BACKGROUND_MAX_SECONDS, chunksAhead)
+    if (!plan?.sentences.length) return
+    try {
+      await startBackgroundQueue(plan.sentences, readAloud.speakingVoiceId, readAloud.rate)
+      backgroundPlan = plan
+    } catch (err) {
+      console.warn('No se pudo seguir leyendo en segundo plano:', err)
+      readAloud.play()
+    }
+  } else if (backgroundPlan) {
+    const plan = backgroundPlan
+    backgroundPlan = null
+    const state = await takeBackgroundQueue()
+    if (state.active) await readAloud.resumeFromBackground(plan, state)
+  }
+}
+document.addEventListener('visibilitychange', onVisibilityChange)
+
+onBeforeUnmount(() => {
+  document.removeEventListener('visibilitychange', onVisibilityChange)
+  stopMediaActions()
+  hideNowPlaying()
+})
 
 /** Alto real de la barra inferior (crece con el reproductor), para que Lumi se coloque encima. */
 const footerHeight = ref(0)

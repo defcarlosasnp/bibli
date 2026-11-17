@@ -16,8 +16,24 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    // Firma de la APK de publicación. Los datos están en android/keystore.properties, que NO se sube
+    // a git: sin esa llave no se pueden publicar actualizaciones que se instalen encima.
+    def keystoreFile = rootProject.file('keystore.properties')
+    def keystore = new Properties()
+    if (keystoreFile.exists()) keystoreFile.withInputStream { keystore.load(it) }
+    signingConfigs {
+        release {
+            if (keystoreFile.exists()) {
+                storeFile file(keystore['storeFile'])
+                storePassword keystore['storePassword']
+                keyAlias keystore['keyAlias']
+                keyPassword keystore['keyPassword']
+            }
+        }
+    }
     buildTypes {
         release {
+            if (keystoreFile.exists()) signingConfig signingConfigs.release
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }

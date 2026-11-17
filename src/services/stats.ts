@@ -1,37 +1,76 @@
 import confetti from 'canvas-confetti'
+import { db, type ReadingDay } from '@/db'
 
-const DAYS_KEY = 'bibli.readingDays'
-
-function dayKey(d: Date): string {
+export function dayKey(d: Date = new Date()): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
 
-function readDays(): string[] {
-  try {
-    return JSON.parse(localStorage.getItem(DAYS_KEY) || '[]')
-  } catch {
-    return []
-  }
+/** Suma actividad al día de hoy (crea el registro si no existe). */
+export async function addReading(delta: Partial<Omit<ReadingDay, 'date'>> = {}) {
+  const date = dayKey()
+  await db.transaction('rw', db.days, async () => {
+    const day = (await db.days.get(date)) ?? { date, seconds: 0, pages: 0, listenSeconds: 0 }
+    day.seconds += delta.seconds ?? 0
+    day.pages += delta.pages ?? 0
+    day.listenSeconds += delta.listenSeconds ?? 0
+    await db.days.put(day)
+  })
 }
 
-/** Marca hoy como día de lectura (se guardan los últimos 120 días). */
+/** Marca hoy como día de lectura (cuenta para la racha). */
 export function recordReadingDay() {
-  const days = new Set(readDays())
-  days.add(dayKey(new Date()))
-  localStorage.setItem(DAYS_KEY, JSON.stringify([...days].sort().slice(-120)))
+  return addReading()
 }
 
 /** Días consecutivos leyendo, contando hasta hoy (o hasta ayer si hoy aún no se ha leído). */
-export function readingStreak(): number {
-  const days = new Set(readDays())
+export function streakFrom(days: Pick<ReadingDay, 'date'>[]): number {
+  const set = new Set(days.map((d) => d.date))
   const cursor = new Date()
-  if (!days.has(dayKey(cursor))) cursor.setDate(cursor.getDate() - 1)
+  if (!set.has(dayKey(cursor))) cursor.setDate(cursor.getDate() - 1)
   let streak = 0
-  while (days.has(dayKey(cursor))) {
+  while (set.has(dayKey(cursor))) {
     streak++
     cursor.setDate(cursor.getDate() - 1)
   }
   return streak
+}
+
+/** Racha más larga de la historia. */
+export function bestStreakFrom(days: Pick<ReadingDay, 'date'>[]): number {
+  const sorted = [...new Set(days.map((d) => d.date))].sort()
+  let best = 0
+  let run = 0
+  let prev: Date | null = null
+  for (const date of sorted) {
+    const d = new Date(`${date}T12:00:00`)
+    run = prev && Math.round((d.getTime() - prev.getTime()) / 86_400_000) === 1 ? run + 1 : 1
+    best = Math.max(best, run)
+    prev = d
+  }
+  return best
+}
+
+// ---------- Meta diaria ----------
+
+const GOAL_KEY = 'bibli.goalMinutes'
+export const GOAL_OPTIONS = [5, 10, 15, 20, 30, 45, 60]
+
+export function dailyGoalMinutes(): number {
+  return Number(localStorage.getItem(GOAL_KEY)) || 15
+}
+
+export function setDailyGoalMinutes(minutes: number) {
+  localStorage.setItem(GOAL_KEY, String(minutes))
+}
+
+/** Tiempo legible: "45 s", "12 min", "2 h 5 min". */
+export function formatDuration(seconds: number): string {
+  if (seconds < 60) return `${Math.round(seconds)} s`
+  const minutes = Math.round(seconds / 60)
+  if (minutes < 60) return `${minutes} min`
+  const h = Math.floor(minutes / 60)
+  const m = minutes % 60
+  return m ? `${h} h ${m} min` : `${h} h`
 }
 
 export function greeting(date = new Date()): { text: string; icon: string } {

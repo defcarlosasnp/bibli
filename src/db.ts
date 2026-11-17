@@ -36,9 +36,51 @@ export interface BookFile {
   data: Blob
 }
 
+export type HighlightColor = 'yellow' | 'green' | 'pink' | 'blue'
+
+/** Rectángulo de un subrayado en un PDF, en fracciones del tamaño de la página (0..1). */
+export interface HighlightRect {
+  x: number
+  y: number
+  w: number
+  h: number
+}
+
+export interface Highlight {
+  id: number
+  bookId: number
+  /** Página (PDF) o rango CFI (EPUB). */
+  position: string
+  /** Solo PDF: dónde dibujarlo, independiente del zoom. */
+  rects?: HighlightRect[]
+  text: string
+  note: string
+  color: HighlightColor
+  createdAt: number
+}
+
+/** Actividad de un día (fecha local AAAA-MM-DD). */
+export interface ReadingDay {
+  date: string
+  /** Segundos leyendo con la app abierta (o escuchando). */
+  seconds: number
+  /** Páginas pasadas hacia delante. */
+  pages: number
+  /** Segundos escuchando a Lumi leer. */
+  listenSeconds: number
+}
+
+export interface UnlockedAchievement {
+  id: string
+  unlockedAt: number
+}
+
 export const db = new Dexie('bibli') as Dexie & {
   books: EntityTable<Book, 'id'>
   files: EntityTable<BookFile, 'bookId'>
+  highlights: EntityTable<Highlight, 'id'>
+  days: EntityTable<ReadingDay, 'date'>
+  achievements: EntityTable<UnlockedAchievement, 'id'>
 }
 
 db.version(1).stores({
@@ -59,3 +101,22 @@ db.version(2)
         book.bookmarks ??= []
       }),
   )
+
+db.version(3)
+  .stores({
+    highlights: '++id, bookId, createdAt',
+    days: 'date',
+    achievements: 'id',
+  })
+  .upgrade(async (tx) => {
+    // Antes solo se guardaban los días con lectura (para la racha) en localStorage
+    let legacy: string[] = []
+    try {
+      legacy = JSON.parse(localStorage.getItem('bibli.readingDays') || '[]')
+    } catch {
+      legacy = []
+    }
+    await tx
+      .table('days')
+      .bulkPut(legacy.map((date) => ({ date, seconds: 0, pages: 0, listenSeconds: 0 })))
+  })

@@ -1,13 +1,19 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowRef, nextTick, toRaw, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useQuasar } from 'quasar'
+import { liveQuery } from 'dexie'
 import ePub, { EpubCFI, type Book as EpubBook, type Rendition, type NavItem } from 'epubjs'
-import { Util, type PDFDocumentProxy, type PageViewport, type RenderTask } from 'pdfjs-dist'
+import { TextLayer, Util, type PDFDocumentProxy, type PageViewport, type RenderTask } from 'pdfjs-dist'
 import type { TextItem } from 'pdfjs-dist/types/src/display/api'
-import { db, type Book, type Bookmark } from '@/db'
+import { db, type Book, type Bookmark, type Highlight, type HighlightColor, type HighlightRect } from '@/db'
 import { openPdf } from '@/services/pdf'
-import { FINISHED_THRESHOLD, celebrate, recordReadingDay } from '@/services/stats'
+import { FINISHED_THRESHOLD, addReading, celebrate, recordReadingDay } from '@/services/stats'
+import { HIGHLIGHT_COLORS, addHighlight, copyText, removeHighlight, updateHighlight } from '@/services/highlights'
+import { checkAchievements, setAchievementAnnouncer } from '@/services/achievements'
+import SelectionBar from '@/components/SelectionBar.vue'
+import HighlightDialog from '@/components/HighlightDialog.vue'
+import DictionaryDialog from '@/components/DictionaryDialog.vue'
 import { cleanForSpeech, speechSupported, splitSentences } from '@/services/speech'
 import {
   BACKGROUND_MAX_SECONDS,
@@ -30,6 +36,7 @@ import ReadAloudBar from '@/components/ReadAloudBar.vue'
 
 const props = defineProps<{ id: string }>()
 const router = useRouter()
+const route = useRoute()
 const $q = useQuasar()
 
 const book = ref<Book>()
@@ -51,6 +58,9 @@ const pageCount = ref(0)
 const zoom = ref(1)
 /** Viewport de la página en píxeles CSS (sin devicePixelRatio), para colocar el resaltado. */
 const pdfViewport = shallowRef<PageViewport>()
+/** Capa de texto invisible encima del dibujo de la página: permite seleccionar y subrayar. */
+const textLayerEl = ref<HTMLDivElement>()
+let textLayer: TextLayer | null = null
 let renderTask: RenderTask | null = null
 let destroyPdf: (() => Promise<void>) | undefined
 
@@ -106,6 +116,8 @@ function greetReader(meta: Book) {
 
 function onPageForward() {
   pagesThisSession++
+  markActivity()
+  addReading({ pages: 1 })
   if (pagesThisSession % PAGE_CHEER_EVERY === 0) {
     const cheers = ['¡Vas genial! 🚀', '¡Qué ritmo! 🔥', '¡Imparable! 💪', '¡Así se lee! 🦉']
     lumiSay(`¡${pagesThisSession} páginas hoy! ${cheers[Math.floor(Math.random() * cheers.length)]}`, 'excited', 3500)
@@ -120,6 +132,7 @@ function saveProgress(position: string, progress: number | null) {
     finished = true
     celebrate()
     lumiSay('¡¡Lo terminaste!! 🎉 Estoy orgullosísimo de ti', 'excited', 6000)
+    setTimeout(checkAchievements, 3000)
     $q.notify({
       message: `¡Terminaste «${book.value?.title}»! 🎉`,
       color: 'secondary',
@@ -162,12 +175,22 @@ onMounted(async () => {
   if (meta.format === 'pdf') await initPdf(data, meta)
   else await initEpub(data, meta)
   window.addEventListener('keydown', onKey)
+  window.addEventListener('pointerdown', markActivity)
+  document.addEventListener('selectionchange', onDocumentSelectionChange)
   resizeObserver.observe(viewport.value!)
+  setAchievementAnnouncer((a) => lumiSay(`${a.icon} ${a.lumi}`, 'excited', 6000))
   greetReader(meta)
+  // Desde "Mis frases": abrir directamente en el subrayado
+  if (typeof route.query.at === 'string') goTo(route.query.at)
 })
 
 onBeforeUnmount(() => {
   clearInterval(sessionTimer)
+  clearInterval(statsTimer)
+  highlightsSub.unsubscribe()
+  setAchievementAnnouncer(null)
+  window.removeEventListener('pointerdown', markActivity)
+  document.removeEventListener('selectionchange', onDocumentSelectionChange)
   window.removeEventListener('keydown', onKey)
   resizeObserver.disconnect()
   renderTask?.cancel()
@@ -211,9 +234,26 @@ async function renderPdfPage(dir = 0) {
     await renderTask.promise
     pdfViewport.value = p.getViewport({ scale: fit })
     if (dir) animateTurn(canvas.value?.parentElement ?? undefined, dir)
+    await renderTextLayer(p, pdfViewport.value)
   } catch (err) {
     if ((err as Error)?.name !== 'RenderingCancelledException') throw err
   }
+}
+
+/** Texto transparente colocado sobre el dibujo de la página, para poder seleccionarlo. */
+async function renderTextLayer(p: Awaited<ReturnType<PDFDocumentProxy['getPage']>>, vp: PageViewport) {
+  const el = textLayerEl.value
+  if (!el) return
+  textLayer?.cancel()
+  el.replaceChildren()
+  el.style.setProperty('--total-scale-factor', String(vp.scale))
+  el.style.setProperty('--scale-round-x', '1px')
+  el.style.setProperty('--scale-round-y', '1px')
+  textLayer = new TextLayer({ textContentSource: await p.getTextContent(), container: el, viewport: vp })
+  await textLayer.render()
+  // pdf.js fija el tamaño con round() de CSS, que los WebView antiguos no entienden: ocupa toda la página
+  el.style.width = '100%'
+  el.style.height = '100%'
 }
 
 function goToPdfPage(n: number, byReadAloud = false) {
@@ -258,7 +298,9 @@ async function initEpub(data: ArrayBuffer, meta: Book) {
   const percentAt = (cfi: string) => (locationsReady ? epub.value!.locations.percentageFromCfi(cfi) : null)
 
   epubPercent.value = meta.progress || null
+  watchEpubSelection(rendition.value)
   rendition.value.on('relocated', (loc: { start: { cfi: string; href: string } }) => {
+    markActivity()
     const cfi = loc.start.cfi
     const pct = percentAt(cfi)
     if (pct != null) epubPercent.value = pct
@@ -270,6 +312,7 @@ async function initEpub(data: ArrayBuffer, meta: Book) {
 
   epub.value.loaded.navigation.then((nav) => (toc.value = nav.toc))
   await rendition.value.display(meta.position || undefined)
+  syncEpubHighlights()
   // Generar las ubicaciones permite calcular el % leído; puede tardar en libros grandes.
   await epub.value.ready
   await epub.value.locations.generate(1600)
@@ -588,6 +631,7 @@ const stopMediaActions = onMediaAction((action) => {
  * al servicio nativo, que sigue leyendo. Al volver, se retoma desde donde llegó.
  */
 let backgroundPlan: BackgroundPlan | null = null
+let backgroundSince = 0
 async function onVisibilityChange() {
   if (!backgroundReadingSupported) return
   if (document.visibilityState === 'hidden') {
@@ -598,6 +642,7 @@ async function onVisibilityChange() {
     try {
       await startBackgroundQueue(plan.sentences, readAloud.speakingVoiceId, readAloud.rate)
       backgroundPlan = plan
+      backgroundSince = Date.now()
     } catch (err) {
       console.warn('No se pudo seguir leyendo en segundo plano:', err)
       readAloud.play()
@@ -606,6 +651,9 @@ async function onVisibilityChange() {
     const plan = backgroundPlan
     backgroundPlan = null
     const state = await takeBackgroundQueue()
+    // Lo escuchado con la pantalla bloqueada también cuenta (como mucho, lo que daba la cola)
+    const listened = Math.min((Date.now() - backgroundSince) / 1000, BACKGROUND_MAX_SECONDS)
+    if (state.active && listened > 0) addReading({ seconds: Math.round(listened), listenSeconds: Math.round(listened) })
     if (state.active) await readAloud.resumeFromBackground(plan, state)
   }
 }
@@ -619,6 +667,200 @@ onBeforeUnmount(() => {
 
 /** Alto real de la barra inferior (crece con el reproductor), para que Lumi se coloque encima. */
 const footerHeight = ref(0)
+
+// ---------- Subrayados, notas y diccionario ----------
+
+const highlights = ref<Highlight[]>([])
+const highlightsSub = liveQuery(() => db.highlights.where('bookId').equals(bookId).sortBy('createdAt')).subscribe(
+  (list) => (highlights.value = list),
+)
+
+/** Texto seleccionado ahora mismo y dónde está (página o rango CFI). */
+interface PendingSelection {
+  text: string
+  position: string
+  rects?: HighlightRect[]
+}
+const selection = ref<PendingSelection | null>(null)
+let epubSelectionWindow: Window | null = null
+
+function clearSelection() {
+  selection.value = null
+  window.getSelection()?.removeAllRanges()
+  epubSelectionWindow?.getSelection()?.removeAllRanges()
+  epubSelectionWindow = null
+}
+
+// PDF: se selecciona sobre la capa de texto. Se espera un poco a que se suelten los tiradores.
+let selectionTimer: ReturnType<typeof setTimeout> | undefined
+function onDocumentSelectionChange() {
+  if (book.value?.format !== 'pdf') return
+  clearTimeout(selectionTimer)
+  selectionTimer = setTimeout(readPdfSelection, 350)
+}
+
+function readPdfSelection() {
+  const sel = window.getSelection()
+  const el = textLayerEl.value
+  if (!sel || sel.isCollapsed || !el || !sel.anchorNode || !el.contains(sel.anchorNode)) {
+    if (book.value?.format === 'pdf') selection.value = null
+    return
+  }
+  const text = cleanForSpeech(sel.toString())
+  if (!text) return
+  const box = el.getBoundingClientRect()
+  const rects = [...sel.getRangeAt(0).getClientRects()]
+    .filter((r) => r.width > 1 && r.height > 1)
+    .map((r) => ({
+      x: (r.left - box.left) / box.width,
+      y: (r.top - box.top) / box.height,
+      w: r.width / box.width,
+      h: r.height / box.height,
+    }))
+  selection.value = { text, position: String(page.value), rects: mergeRects(rects) }
+}
+
+/** Une los trozos de una misma línea para que el subrayado se vea continuo. */
+function mergeRects(rects: HighlightRect[]): HighlightRect[] {
+  const out: HighlightRect[] = []
+  for (const r of [...rects].sort((a, b) => a.y - b.y || a.x - b.x)) {
+    const last = out[out.length - 1]
+    if (last && Math.abs(last.y - r.y) < last.h * 0.5 && r.x <= last.x + last.w + 0.02) {
+      const right = Math.max(last.x + last.w, r.x + r.w)
+      last.x = Math.min(last.x, r.x)
+      last.w = right - last.x
+      last.h = Math.max(last.h, r.h)
+    } else {
+      out.push({ ...r })
+    }
+  }
+  return out
+}
+
+/** Subrayados de la página PDF visible, listos para dibujar sobre ella. */
+const pdfPageHighlights = computed(() =>
+  book.value?.format === 'pdf' ? highlights.value.filter((h) => h.position === String(page.value) && h.rects) : [],
+)
+
+/** Tocar un subrayado del PDF abre su nota (la capa de texto está encima y se lleva el toque). */
+function onPdfPageClick(e: MouseEvent) {
+  if (window.getSelection()?.toString()) return
+  const box = (e.currentTarget as HTMLElement).getBoundingClientRect()
+  const x = (e.clientX - box.left) / box.width
+  const y = (e.clientY - box.top) / box.height
+  const hit = pdfPageHighlights.value.find((h) =>
+    h.rects!.some((r) => x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h),
+  )
+  if (hit) openHighlight(hit.id)
+}
+
+// EPUB: epub.js avisa de la selección dentro del capítulo y dibuja los subrayados como anotaciones
+const epubDrawn = new Map<number, { cfi: string; color: HighlightColor }>()
+
+function syncEpubHighlights() {
+  const r = rendition.value
+  if (!r) return
+  const current = new Map(highlights.value.map((h) => [h.id, h]))
+  for (const [id, drawn] of epubDrawn) {
+    if (current.get(id)?.color !== drawn.color) {
+      r.annotations.remove(drawn.cfi, 'highlight')
+      epubDrawn.delete(id)
+    }
+  }
+  for (const h of highlights.value) {
+    if (epubDrawn.has(h.id)) continue
+    r.annotations.highlight(h.position, { id: h.id }, () => openHighlight(h.id), 'hl-user', {
+      fill: HIGHLIGHT_COLORS[h.color].solid,
+      'fill-opacity': '0.4',
+      'mix-blend-mode': 'normal',
+    })
+    epubDrawn.set(h.id, { cfi: h.position, color: h.color })
+  }
+}
+watch(highlights, syncEpubHighlights)
+
+function watchEpubSelection(r: Rendition) {
+  r.on('selected', (cfiRange: string, contents: { window: Window }) => {
+    const text = cleanForSpeech(contents.window.getSelection()?.toString() ?? '')
+    if (!text) return
+    epubSelectionWindow = contents.window
+    selection.value = { text, position: cfiRange }
+  })
+  r.hooks.content.register((contents: { document: Document }) => {
+    contents.document.addEventListener('selectionchange', () => {
+      if (book.value?.format === 'epub' && contents.document.getSelection()?.isCollapsed) selection.value = null
+    })
+  })
+}
+
+async function saveSelection(color: HighlightColor, note = '') {
+  const s = selection.value
+  if (!s) return
+  // IndexedDB no puede guardar los Proxy reactivos de Vue: se guarda una copia simple
+  const rects = s.rects?.map((r) => ({ x: r.x, y: r.y, w: r.w, h: r.h }))
+  await addHighlight({ bookId, position: s.position, rects, text: s.text, note, color })
+  clearSelection()
+  lumiSay(note ? '¡Nota guardada! 📝' : '¡Guardada en tus frases favoritas! 🖍️', 'happy', 2500)
+  checkAchievements()
+}
+
+function onSelectionNote() {
+  const s = selection.value
+  if (!s) return
+  $q.dialog({ component: HighlightDialog, componentProps: { text: s.text } }).onOk(
+    ({ note, color }: { note: string; color: HighlightColor }) => saveSelection(color, note),
+  )
+}
+
+function onSelectionDefine() {
+  const s = selection.value
+  if (!s) return
+  $q.dialog({ component: DictionaryDialog, componentProps: { text: s.text } })
+  clearSelection()
+}
+
+async function onSelectionCopy() {
+  const s = selection.value
+  if (!s) return
+  const ok = await copyText(s.text)
+  $q.notify({ message: ok ? 'Copiado' : 'No se pudo copiar', icon: 'content_copy', timeout: 1200 })
+  clearSelection()
+}
+
+function openHighlight(id: number) {
+  const h = highlights.value.find((x) => x.id === id)
+  if (!h) return
+  $q.dialog({
+    component: HighlightDialog,
+    componentProps: { text: h.text, note: h.note, color: h.color, existing: true },
+  }).onOk(async (r: { remove?: boolean; note?: string; color?: HighlightColor }) => {
+    if (r.remove) await removeHighlight(id)
+    else {
+      await updateHighlight(id, { note: r.note ?? '', color: r.color ?? h.color })
+      checkAchievements()
+    }
+  })
+}
+
+// ---------- Estadísticas: tiempo, páginas y escucha ----------
+
+const READING_TICK_S = 15
+/** Sin tocar nada durante este tiempo (y sin escuchar), no cuenta como lectura. */
+const IDLE_AFTER_MS = 3 * 60_000
+let lastActivity = Date.now()
+let statsTicks = 0
+
+function markActivity() {
+  lastActivity = Date.now()
+}
+
+const statsTimer = setInterval(() => {
+  if (document.visibilityState !== 'visible' || loading.value) return
+  const listening = readAloud.playing
+  if (!listening && Date.now() - lastActivity > IDLE_AFTER_MS) return
+  addReading({ seconds: READING_TICK_S, listenSeconds: listening ? READING_TICK_S : 0 })
+  if (++statsTicks % 4 === 0) checkAchievements()
+}, READING_TICK_S * 1000)
 
 // ---------- Marcadores ----------
 
@@ -732,6 +974,8 @@ function setZoom(delta: number) {
 
 function onSwipe({ direction }: { direction?: string }) {
   if (book.value?.format !== 'pdf') return
+  // Arrastrar para seleccionar texto no debe pasar de página
+  if (window.getSelection()?.toString()) return
   if (direction === 'left') next()
   else if (direction === 'right') prev()
 }
@@ -801,6 +1045,26 @@ function onSwipe({ direction }: { direction?: string }) {
             </q-item-section>
             <q-item-section side>
               <q-toggle :model-value="showBuddy" color="accent" @update:model-value="toggleBuddy" />
+            </q-item-section>
+          </q-item>
+
+          <q-separator class="q-my-sm" />
+          <q-item-label header>Subrayados y notas</q-item-label>
+          <q-item v-if="!highlights.length">
+            <q-item-section class="text-grey">
+              Mantén pulsado el texto (o selecciónalo) para subrayarlo o buscar una palabra.
+            </q-item-section>
+          </q-item>
+          <q-item v-for="h in highlights" :key="h.id" clickable @click="goTo(h.position)">
+            <q-item-section avatar>
+              <span class="hl-swatch" :style="{ background: HIGHLIGHT_COLORS[h.color].solid }" />
+            </q-item-section>
+            <q-item-section>
+              <q-item-label lines="3" class="hl-text">{{ h.text }}</q-item-label>
+              <q-item-label v-if="h.note" caption lines="2" class="hl-note">📝 {{ h.note }}</q-item-label>
+            </q-item-section>
+            <q-item-section side>
+              <q-btn flat round dense icon="edit" size="sm" aria-label="Editar" @click.stop="openHighlight(h.id)" />
             </q-item-section>
           </q-item>
 
@@ -874,15 +1138,39 @@ function onSwipe({ direction }: { direction?: string }) {
         <div
           v-if="!loading"
           ref="viewport"
-          v-touch-swipe.mouse.horizontal="onSwipe"
+          v-touch-swipe.horizontal="onSwipe"
           class="viewport"
           :class="{ 'pdf-viewport': book?.format === 'pdf' }"
         >
-          <div v-if="book?.format === 'pdf'" class="pdf-page">
+          <div v-if="book?.format === 'pdf'" class="pdf-page" @click="onPdfPageClick">
             <canvas ref="canvas" class="shadow-4" />
-            <div v-for="(r, i) in pdfHighlightRects" :key="i" class="tts-hl" :style="r" />
+            <template v-for="h in pdfPageHighlights" :key="h.id">
+              <div
+                v-for="(r, i) in h.rects"
+                :key="i"
+                class="user-hl"
+                :style="{
+                  left: `${r.x * 100}%`,
+                  top: `${r.y * 100}%`,
+                  width: `${r.w * 100}%`,
+                  height: `${r.h * 100}%`,
+                  background: HIGHLIGHT_COLORS[h.color].fill,
+                }"
+              />
+            </template>
+            <div v-for="(r, i) in pdfHighlightRects" :key="`tts-${i}`" class="tts-hl" :style="r" />
+            <div ref="textLayerEl" class="textLayer" />
           </div>
         </div>
+        <SelectionBar
+          v-if="selection"
+          :text="selection.text"
+          @highlight="saveSelection"
+          @note="onSelectionNote"
+          @define="onSelectionDefine"
+          @copy="onSelectionCopy"
+          @close="clearSelection"
+        />
         <transition name="buddy">
           <ReaderBuddy
             v-if="showBuddy && !loading"
@@ -948,6 +1236,83 @@ function onSwipe({ direction }: { direction?: string }) {
 .pdf-page {
   position: relative;
   margin: auto;
+}
+/* Subrayados del usuario: debajo de la capa de texto, para no estorbar al seleccionar */
+.user-hl {
+  position: absolute;
+  border-radius: 2px;
+  pointer-events: none;
+  mix-blend-mode: multiply;
+}
+.night .user-hl {
+  mix-blend-mode: normal;
+  opacity: 0.6;
+}
+.hl-swatch {
+  display: inline-block;
+  width: 6px;
+  height: 36px;
+  border-radius: 3px;
+}
+.hl-text {
+  font-family: var(--font-display);
+  font-style: italic;
+}
+.hl-note {
+  margin-top: 2px;
+}
+/* Capa de texto de pdf.js (sus reglas, sin anidar, para que funcionen en WebViews antiguos) */
+.textLayer {
+  position: absolute;
+  inset: 0;
+  overflow: clip;
+  line-height: 1;
+  text-align: initial;
+  -webkit-text-size-adjust: none;
+  text-size-adjust: none;
+  forced-color-adjust: none;
+  transform-origin: 0 0;
+  z-index: 2;
+  --min-font-size: 1;
+  --text-scale-factor: calc(var(--total-scale-factor) * var(--min-font-size));
+  --min-font-size-inv: calc(1 / var(--min-font-size));
+}
+.textLayer :deep(span),
+.textLayer :deep(br) {
+  color: transparent;
+  position: absolute;
+  white-space: pre;
+  cursor: text;
+  transform-origin: 0% 0%;
+  user-select: text;
+  -webkit-user-select: text;
+}
+.textLayer > :deep(:not(.markedContent)),
+.textLayer :deep(.markedContent span:not(.markedContent)) {
+  z-index: 1;
+  --font-height: 0;
+  font-size: calc(var(--text-scale-factor) * var(--font-height));
+  --scale-x: 1;
+  --rotate: 0deg;
+  transform: rotate(var(--rotate)) scaleX(var(--scale-x)) scale(var(--min-font-size-inv));
+}
+.textLayer :deep(.markedContent) {
+  display: contents;
+}
+.textLayer :deep(::selection) {
+  background: rgba(242, 158, 56, 0.35);
+  color: transparent;
+}
+.textLayer :deep(br::selection) {
+  background: transparent;
+}
+.textLayer :deep(.endOfContent) {
+  display: block;
+  position: absolute;
+  inset: 100% 0 0;
+  z-index: 0;
+  cursor: default;
+  user-select: none;
 }
 .pdf-viewport canvas {
   display: block;

@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useQuasar } from 'quasar'
 import { storeToRefs } from 'pinia'
+import { liveQuery } from 'dexie'
 import BookCard from '@/components/BookCard.vue'
 import BookListItem from '@/components/BookListItem.vue'
 import BookEditDialog from '@/components/BookEditDialog.vue'
@@ -10,9 +11,10 @@ import ReadingBuddy from '@/components/ReadingBuddy.vue'
 import ContinueReading from '@/components/ContinueReading.vue'
 import LumiOwl from '@/components/LumiOwl.vue'
 import { useLibraryStore, type SortKey } from '@/stores/library'
-import { FINISHED_THRESHOLD, celebrate, greeting, readingStreak } from '@/services/stats'
+import { FINISHED_THRESHOLD, celebrate, dailyGoalMinutes, dayKey, formatDuration, greeting, streakFrom } from '@/services/stats'
+import { checkAchievements, setAchievementAnnouncer } from '@/services/achievements'
 import { outfitFor } from '@/services/lumi'
-import type { Book } from '@/db'
+import { db, type Book, type ReadingDay } from '@/db'
 
 const $q = useQuasar()
 const router = useRouter()
@@ -24,8 +26,25 @@ const fileInput = ref<HTMLInputElement>()
 const buddy = ref<InstanceType<typeof ReadingBuddy>>()
 const importing = ref(false)
 const dragging = ref(false)
-const streak = ref(readingStreak())
+const days = ref<ReadingDay[]>([])
+const daysSub = liveQuery(() => db.days.toArray()).subscribe((list) => (days.value = list))
+const streak = computed(() => streakFrom(days.value))
+const goalSeconds = dailyGoalMinutes() * 60
+const todaySeconds = computed(() => days.value.find((d) => d.date === dayKey())?.seconds ?? 0)
+const goalPercent = computed(() => Math.min(100, Math.round((todaySeconds.value / goalSeconds) * 100)))
 const hello = greeting()
+
+onMounted(() => {
+  // Lumi anuncia los logros desde su bocadillo
+  setAchievementAnnouncer((a) =>
+    buddy.value?.say({ mood: 'excited', parts: [{ t: `${a.icon} ` }, { t: a.title, b: true }, { t: ` · ${a.lumi}` }] }),
+  )
+  checkAchievements()
+})
+onBeforeUnmount(() => {
+  daysSub.unsubscribe()
+  setAchievementAnnouncer(null)
+})
 const outfit = outfitFor()
 const headerOwlMood = ref<'idle' | 'excited'>('idle')
 
@@ -70,6 +89,7 @@ async function handleFiles(list: FileList | File[] | null | undefined) {
     const r = await library.importFiles(Array.from(list))
     if (r.added) {
       celebrate()
+      setTimeout(checkAchievements, 2500)
       buddy.value?.say({
         mood: 'excited',
         parts: [
@@ -213,6 +233,45 @@ function removeBook(book: Book) {
                     <span class="stat__value font-display">{{ s.value }}</span>
                     <span class="stat__label">{{ s.label }}</span>
                   </div>
+                </div>
+                <div v-if="books.length" class="today">
+                  <button class="today__goal" @click="router.push({ name: 'stats' })">
+                    <q-circular-progress
+                      :value="goalPercent"
+                      size="46px"
+                      :thickness="0.22"
+                      color="accent"
+                      track-color="white"
+                      show-value
+                      class="text-weight-bold"
+                    >
+                      {{ goalPercent >= 100 ? '✓' : `${goalPercent}%` }}
+                    </q-circular-progress>
+                    <span class="today__text">
+                      <b>Hoy {{ formatDuration(todaySeconds) }}</b>
+                      <span>de tu meta de {{ dailyGoalMinutes() }} min</span>
+                    </span>
+                  </button>
+                  <q-btn
+                    rounded
+                    unelevated
+                    no-caps
+                    color="white"
+                    text-color="primary"
+                    icon="insights"
+                    label="Estadísticas y logros"
+                    @click="router.push({ name: 'stats' })"
+                  />
+                  <q-btn
+                    rounded
+                    unelevated
+                    no-caps
+                    color="white"
+                    text-color="primary"
+                    icon="format_quote"
+                    label="Mis frases"
+                    @click="router.push({ name: 'quotes' })"
+                  />
                 </div>
               </div>
               <ReadingBuddy
@@ -436,6 +495,36 @@ function removeBook(book: Book) {
 .stat__label {
   font-size: 0.78rem;
   opacity: 0.8;
+}
+.today {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+.today__goal {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 14px 4px 4px;
+  border: 0;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--card) 70%, transparent);
+  color: var(--ink);
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+.today__text {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.15;
+  font-size: 0.85rem;
+}
+.today__text span {
+  font-size: 0.75rem;
+  opacity: 0.75;
 }
 .hero__deco {
   position: absolute;

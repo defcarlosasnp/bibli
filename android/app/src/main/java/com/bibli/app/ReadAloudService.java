@@ -10,6 +10,9 @@ import android.content.Intent;
 import android.content.pm.ServiceInfo;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.media.AudioAttributes;
+import android.media.AudioFormat;
+import android.media.AudioTrack;
 import android.media.MediaMetadata;
 import android.media.session.MediaSession;
 import android.media.session.PlaybackState;
@@ -281,6 +284,45 @@ public class ReadAloudService extends Service {
         // La CPU solo hace falta despierta mientras suena; en pausa se libera para no gastar batería
         if (playing) wakeLock.acquire(4 * 60 * 60 * 1000L);
         else if (wakeLock.isHeld()) wakeLock.release();
+        setSilence(playing);
+    }
+
+    // ---------- Botones de los auriculares ----------
+
+    /**
+     * Android manda los botones de los auriculares (y del Bluetooth) a la sesión de la app que está
+     * reproduciendo audio. La voz la reproduce el motor de Google, no Bibli, así que los botones no
+     * llegaban. Mientras se lee, Bibli reproduce silencio (ceros, sin coste apreciable) para que
+     * Android la considere la app que suena.
+     */
+    private AudioTrack silence;
+
+    private void setSilence(boolean on) {
+        if (on && silence == null) {
+            int rate = 8000;
+            short[] zeros = new short[rate];
+            AudioTrack track = new AudioTrack.Builder()
+                .setAudioAttributes(new AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .build())
+                .setAudioFormat(new AudioFormat.Builder()
+                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                    .setSampleRate(rate)
+                    .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                    .build())
+                .setBufferSizeInBytes(zeros.length * 2)
+                .setTransferMode(AudioTrack.MODE_STATIC)
+                .build();
+            track.write(zeros, 0, zeros.length);
+            track.setLoopPoints(0, zeros.length, -1);
+            track.play();
+            silence = track;
+        } else if (!on && silence != null) {
+            silence.stop();
+            silence.release();
+            silence = null;
+        }
     }
 
     private Notification buildNotification() {
@@ -325,6 +367,7 @@ public class ReadAloudService extends Service {
         if (instance == this) instance = null;
         if (watchdog != null) main.removeCallbacks(watchdog);
         if (tts != null) tts.shutdown();
+        setSilence(false);
         if (wakeLock.isHeld()) wakeLock.release();
         session.setActive(false);
         session.release();

@@ -15,6 +15,7 @@ import SelectionBar from '@/components/SelectionBar.vue'
 import HighlightDialog from '@/components/HighlightDialog.vue'
 import DictionaryDialog from '@/components/DictionaryDialog.vue'
 import { cleanForSpeech, speechSupported, splitSentences } from '@/services/speech'
+import { findMatches, foldQuery } from '@/services/bookSearch'
 import {
   BACKGROUND_MAX_SECONDS,
   LOOKAHEAD_EPUB_CHAPTERS,
@@ -357,10 +358,12 @@ interface PdfHighlightPart {
   to: number
 }
 const pdfHighlight = shallowRef<PdfHighlightPart[]>([])
-const pdfHighlightRects = computed(() => {
+const pdfHighlightRects = computed(() => partRects(pdfHighlight.value))
+
+function partRects(parts: PdfHighlightPart[]) {
   const vp = pdfViewport.value
   if (!vp) return []
-  return pdfHighlight.value.map(({ item, from, to }) => {
+  return parts.map(({ item, from, to }) => {
     const tx = Util.transform(vp.transform, item.transform)
     const h = Math.hypot(tx[2], tx[3])
     const w = item.width * vp.scale
@@ -371,10 +374,13 @@ const pdfHighlightRects = computed(() => {
       height: `${h * 1.25}px`,
     }
   })
-})
+}
 
-async function pdfSentences(pageNumber = page.value): Promise<Sentence[]> {
-  if (!pdf.value) return []
+type PdfSpan = { start: number; end: number; item: TextItem }
+
+/** Texto de una página PDF y qué trozo (TextItem) ocupa cada parte. */
+async function pdfPageText(pageNumber: number): Promise<{ text: string; spans: PdfSpan[] }> {
+  if (!pdf.value) return { text: '', spans: [] }
   const p = await pdf.value.getPage(pageNumber)
   const { items } = await p.getTextContent()
   let text = ''
@@ -398,13 +404,23 @@ async function pdfSentences(pageNumber = page.value): Promise<Sentence[]> {
     }
     if (it.hasEOL) pendingEOL = true
   }
+  return { text, spans }
+}
+
+/** Partes de cada trozo que ocupa el texto entre `start` y `end`. */
+function pdfParts(spans: PdfSpan[], start: number, end: number): PdfHighlightPart[] {
+  return spans
+    .filter((s) => s.end > start && s.start < end)
+    .map((s) => {
+      const len = s.end - s.start
+      return { item: s.item, from: Math.max(0, start - s.start) / len, to: Math.min(len, end - s.start) / len }
+    })
+}
+
+async function pdfSentences(pageNumber = page.value): Promise<Sentence[]> {
+  const { text, spans } = await pdfPageText(pageNumber)
   return splitSentences(text).map(({ start, end }) => {
-    const parts = spans
-      .filter((s) => s.end > start && s.start < end)
-      .map((s) => {
-        const len = s.end - s.start
-        return { item: s.item, from: Math.max(0, start - s.start) / len, to: Math.min(len, end - s.start) / len }
-      })
+    const parts = pdfParts(spans, start, end)
     return { text: cleanForSpeech(text.slice(start, end)), show: () => (pdfHighlight.value = parts) }
   })
 }
@@ -438,8 +454,8 @@ function setEpubMark(cfi: string | null) {
   }
 }
 
-/** Frases del documento con su rango en el DOM. Los bloques (párrafos, títulos…) cortan frase. */
-function documentSentences(doc: Document): { text: string; range: Range }[] {
+/** Texto de un capítulo EPUB y cómo convertir posiciones del texto en rangos del DOM. */
+function documentText(doc: Document): { text: string; rangeOf(start: number, end: number): Range } {
   let text = ''
   const nodes: { node: Text; start: number }[] = []
   let lastBlock: Element | null = null
@@ -473,12 +489,25 @@ function documentSentences(doc: Document): { text: string; range: Range }[] {
     return [node, Math.min(offset - start, node.length)]
   }
 
-  return splitSentences(text).map(({ start, end }) => {
-    const range = doc.createRange()
-    range.setStart(...pointAt(start, false))
-    range.setEnd(...pointAt(end, true))
-    return { text: cleanForSpeech(text.slice(start, end)), range }
-  })
+  return {
+    text,
+    rangeOf(start, end) {
+      const range = doc.createRange()
+      range.setStart(...pointAt(start, false))
+      range.setEnd(...pointAt(end, true))
+      return range
+    },
+  }
+}
+
+/** Frases del documento con su rango en el DOM. Los bloques (párrafos, títulos…) cortan frase. */
+function documentSentences(doc: Document): { text: string; range: Range }[] {
+  const { text, rangeOf } = documentText(doc)
+  if (!text.trim()) return []
+  return splitSentences(text).map(({ start, end }) => ({
+    text: cleanForSpeech(text.slice(start, end)),
+    range: rangeOf(start, end),
+  }))
 }
 
 async function epubSentences(): Promise<Sentence[]> {
@@ -842,6 +871,167 @@ function openHighlight(id: number) {
   })
 }
 
+// ---------- Buscar en el libro ----------
+
+const SEARCH_MAX_RESULTS = 300
+interface SearchResult {
+  key: string
+  position: string
+  label: string
+  before: string
+  match: string
+  after: string
+  /** PDF: dónde está la coincidencia en el texto de la página. */
+  start?: number
+  end?: number
+}
+const searchOpen = ref(false)
+const searchQuery = ref('')
+const searchResults = shallowRef<SearchResult[]>([])
+const searching = ref(false)
+const searchProgress = ref(0)
+const searchDone = ref(false)
+const searchActive = ref<string | null>(null)
+let searchRun = 0
+let searchTimer: ReturnType<typeof setTimeout> | undefined
+
+/** Coincidencia marcada en la página PDF actual. */
+const pdfSearchHit = shallowRef<{ page: number; parts: PdfHighlightPart[] } | null>(null)
+const pdfSearchRects = computed(() =>
+  pdfSearchHit.value && pdfSearchHit.value.page === page.value ? partRects(pdfSearchHit.value.parts) : [],
+)
+let epubSearchMark: string | null = null
+
+const pdfTextCache = new Map<number, string>()
+async function pdfSearchText(p: number): Promise<string> {
+  let text = pdfTextCache.get(p)
+  if (text == null) {
+    text = (await pdfPageText(p)).text
+    pdfTextCache.set(p, text)
+  }
+  return text
+}
+
+function openSearch() {
+  searchOpen.value = true
+}
+
+function onSearchInput() {
+  clearTimeout(searchTimer)
+  searchTimer = setTimeout(runSearch, 450)
+}
+
+async function runSearch() {
+  clearTimeout(searchTimer)
+  const run = ++searchRun
+  const query = foldQuery(searchQuery.value ?? '')
+  searchResults.value = []
+  searchDone.value = false
+  if (query.length < 2) {
+    searching.value = false
+    return
+  }
+  searching.value = true
+  searchProgress.value = 0
+  const results: SearchResult[] = []
+  const push = (items: SearchResult[]) => {
+    results.push(...items.slice(0, SEARCH_MAX_RESULTS - results.length))
+    searchResults.value = [...results]
+  }
+  try {
+    if (book.value?.format === 'pdf') {
+      // Varias páginas a la vez; el texto se guarda para que la siguiente búsqueda sea instantánea.
+      const BATCH = 8
+      for (let first = 1; first <= pageCount.value && results.length < SEARCH_MAX_RESULTS; first += BATCH) {
+        const pages = Array.from({ length: Math.min(BATCH, pageCount.value - first + 1) }, (_, k) => first + k)
+        const texts = await Promise.all(pages.map(pdfSearchText))
+        if (run !== searchRun) return
+        pages.forEach((p, k) =>
+          push(
+            findMatches(texts[k], query, SEARCH_MAX_RESULTS).map((m, i) => ({
+              ...m,
+              key: `${p}-${i}`,
+              position: String(p),
+              label: `Página ${p}`,
+            })),
+          ),
+        )
+        searchProgress.value = (first + pages.length - 1) / pageCount.value
+      }
+    } else if (epub.value) {
+      const b = epub.value
+      const total = (b.spine as unknown as { length: number }).length || 1
+      for (let i = 0; results.length < SEARCH_MAX_RESULTS; i++) {
+        const section = b.spine.get(i)
+        if (!section) break
+        await section.load(b.load.bind(b))
+        if (run !== searchRun) return
+        const doc = (section as unknown as { document?: Document }).document
+        if (doc?.body) {
+          const { text, rangeOf } = documentText(doc)
+          const label = findTocLabel(toc.value, section.href) ?? `Sección ${i + 1}`
+          push(
+            findMatches(text, query, SEARCH_MAX_RESULTS - results.length).map((m, j) => ({
+              ...m,
+              key: `${i}-${j}`,
+              position: section.cfiFromRange(rangeOf(m.start, m.end)),
+              label,
+              start: undefined,
+              end: undefined,
+            })),
+          )
+        }
+        section.unload()
+        searchProgress.value = (i + 1) / total
+      }
+    }
+  } finally {
+    if (run === searchRun) {
+      searching.value = false
+      searchDone.value = true
+    }
+  }
+}
+
+async function openSearchResult(r: SearchResult) {
+  searchOpen.value = false
+  searchActive.value = r.key
+  if (book.value?.format === 'pdf') {
+    const p = Number(r.position)
+    const { spans } = await pdfPageText(p)
+    pdfSearchHit.value = { page: p, parts: pdfParts(spans, r.start!, r.end!) }
+    goTo(r.position)
+  } else {
+    const rd = rendition.value
+    if (!rd) return
+    if (epubSearchMark) rd.annotations.remove(epubSearchMark, 'highlight')
+    epubSearchMark = r.position
+    rd.annotations.highlight(r.position, {}, undefined, 'search-hl', {
+      fill: '#2f8fd8',
+      'fill-opacity': '0.4',
+      'mix-blend-mode': 'normal',
+    })
+    goTo(r.position)
+  }
+}
+
+/** Ir a la coincidencia anterior o siguiente sin abrir el buscador. */
+function stepSearch(dir: number) {
+  const list = searchResults.value
+  const i = list.findIndex((r) => r.key === searchActive.value)
+  const target = list[i + dir]
+  if (target) openSearchResult(target)
+}
+
+const searchIndex = computed(() => searchResults.value.findIndex((r) => r.key === searchActive.value))
+
+function closeSearchHits() {
+  searchActive.value = null
+  pdfSearchHit.value = null
+  if (epubSearchMark) rendition.value?.annotations.remove(epubSearchMark, 'highlight')
+  epubSearchMark = null
+}
+
 // ---------- Estadísticas: tiempo, páginas y escucha ----------
 
 const READING_TICK_S = 15
@@ -942,6 +1132,10 @@ function onKey(e: KeyboardEvent) {
   } else if (e.key === 'ArrowRight' || e.key === 'PageDown') next()
   else if (e.key === 'ArrowLeft' || e.key === 'PageUp') prev()
   else if (e.key === 'b') toggleBookmark()
+  else if (e.key === 'f' && (e.ctrlKey || e.metaKey)) {
+    e.preventDefault()
+    openSearch()
+  }
   else if (e.key === 'Escape') router.push({ name: 'library' })
 }
 
@@ -998,6 +1192,9 @@ function onSwipe({ direction }: { direction?: string }) {
           <q-btn flat round icon="text_decrease" @click="setFontSize(-10)" />
           <q-btn flat round icon="text_increase" @click="setFontSize(10)" />
         </template>
+        <q-btn flat round icon="search" aria-label="Buscar en el libro" @click="openSearch">
+          <q-tooltip>Buscar en el libro (Ctrl+F)</q-tooltip>
+        </q-btn>
         <q-btn flat round :icon="night ? 'light_mode' : 'dark_mode'" @click="toggleNight">
           <q-tooltip>{{ night ? 'Modo día' : 'Modo nocturno' }}</q-tooltip>
         </q-btn>
@@ -1159,9 +1356,64 @@ function onSwipe({ direction }: { direction?: string }) {
               />
             </template>
             <div v-for="(r, i) in pdfHighlightRects" :key="`tts-${i}`" class="tts-hl" :style="r" />
+            <div v-for="(r, i) in pdfSearchRects" :key="`search-${i}`" class="search-hl" :style="r" />
             <div ref="textLayerEl" class="textLayer" />
           </div>
         </div>
+        <div v-if="searchActive && searchIndex >= 0 && !selection" class="search-nav shadow-4">
+          <q-btn flat dense round icon="search" size="sm" aria-label="Ver resultados" @click="openSearch" />
+          <span class="search-nav__count">{{ searchIndex + 1 }} / {{ searchResults.length }}</span>
+          <q-btn flat dense round icon="keyboard_arrow_up" size="sm" :disable="searchIndex <= 0" aria-label="Anterior" @click="stepSearch(-1)" />
+          <q-btn flat dense round icon="keyboard_arrow_down" size="sm" :disable="searchIndex >= searchResults.length - 1" aria-label="Siguiente" @click="stepSearch(1)" />
+          <q-btn flat dense round icon="close" size="sm" aria-label="Cerrar búsqueda" @click="closeSearchHits" />
+        </div>
+        <q-dialog v-model="searchOpen" position="top">
+          <q-card class="search-card">
+            <q-card-section class="q-pb-sm">
+              <q-input
+                v-model="searchQuery"
+                autofocus
+                dense
+                outlined
+                clearable
+                placeholder="Buscar una palabra o frase"
+                @update:model-value="onSearchInput"
+                @keyup.enter="runSearch"
+              >
+                <template #prepend><q-icon name="search" /></template>
+              </q-input>
+              <div class="search-status">
+                <template v-if="searching">
+                  Buscando… {{ Math.round(searchProgress * 100) }}%
+                  <q-linear-progress :value="searchProgress" color="accent" class="q-mt-xs" />
+                </template>
+                <template v-else-if="searchDone && !searchResults.length">No aparece en este libro.</template>
+                <template v-else-if="searchDone">
+                  {{ searchResults.length >= SEARCH_MAX_RESULTS ? `Más de ${SEARCH_MAX_RESULTS}` : searchResults.length }}
+                  {{ searchResults.length === 1 ? 'resultado' : 'resultados' }}
+                </template>
+                <template v-else>No importan las mayúsculas ni las tildes.</template>
+              </div>
+            </q-card-section>
+            <q-list v-if="searchResults.length" separator class="search-results">
+              <q-item
+                v-for="r in searchResults"
+                :key="r.key"
+                clickable
+                :active="r.key === searchActive"
+                active-class="search-results__active"
+                @click="openSearchResult(r)"
+              >
+                <q-item-section>
+                  <q-item-label caption>{{ r.label }}</q-item-label>
+                  <q-item-label class="search-snippet">
+                    {{ r.before }}<mark>{{ r.match }}</mark>{{ r.after }}
+                  </q-item-label>
+                </q-item-section>
+              </q-item>
+            </q-list>
+          </q-card>
+        </q-dialog>
         <SelectionBar
           v-if="selection"
           :text="selection.text"
@@ -1331,6 +1583,61 @@ function onSwipe({ direction }: { direction?: string }) {
 }
 .night .tts-hl {
   background: rgba(242, 158, 56, 0.45);
+}
+.search-hl {
+  position: absolute;
+  border-radius: 3px;
+  background: rgba(47, 143, 216, 0.35);
+  outline: 2px solid rgba(47, 143, 216, 0.8);
+  pointer-events: none;
+}
+.search-nav {
+  position: fixed;
+  top: calc(64px + var(--q-safe-area-inset-top, 0px));
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 2000;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: var(--card);
+  color: var(--ink);
+}
+.search-nav__count {
+  font-size: 0.85rem;
+  padding: 0 4px;
+  min-width: 52px;
+  text-align: center;
+}
+.search-card {
+  width: 600px;
+  max-width: 94vw;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+}
+.search-status {
+  font-size: 0.8rem;
+  color: var(--ink-soft);
+  margin-top: 6px;
+}
+.search-results {
+  overflow-y: auto;
+}
+.search-results__active {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.search-snippet {
+  line-height: 1.4;
+}
+.search-snippet mark {
+  background: rgba(47, 143, 216, 0.3);
+  color: inherit;
+  border-radius: 3px;
+  padding: 0 1px;
+  font-weight: 600;
 }
 .listen-btn--on {
   color: var(--accent);

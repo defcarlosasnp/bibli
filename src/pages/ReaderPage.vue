@@ -620,7 +620,14 @@ const readAloud = reactive(
       onChunkEnd: () => {
         if (book.value?.format === 'epub') lumiSay('¡Fin del capítulo! Seguimos con el siguiente 🎶', 'excited', 3500)
       },
-      onVoiceFallback: () => lumiSay('Me quedé sin internet 📶 Sigo con la voz del teléfono', 'happy', 5000),
+      onVoiceFallback: () =>
+        lumiSay(
+          readAloud.currentVoice?.neural
+            ? 'La voz neuronal no pudo arrancar 😕 Sigo con la voz del teléfono'
+            : 'Me quedé sin internet 📶 Sigo con la voz del teléfono',
+          'happy',
+          5000,
+        ),
       onSleep: () => lumiSay('Buenas noches 🌙 Te guardé el sitio, mañana seguimos 😴', 'sleepy', 8000),
       onFinish: () => lumiSay('Y… ¡fin! 📕 Gracias por escuchar conmigo 🦉', 'excited', 6000),
       onNoText: () => {
@@ -669,7 +676,7 @@ async function onVisibilityChange() {
     const plan = await readAloud.exportForBackground(BACKGROUND_MAX_SECONDS, chunksAhead)
     if (!plan?.sentences.length) return
     try {
-      await startBackgroundQueue(plan.sentences, readAloud.speakingVoiceId, readAloud.rate)
+      await startBackgroundQueue(plan.sentences, readAloud.backgroundVoiceId, readAloud.rate)
       backgroundPlan = plan
       backgroundSince = Date.now()
     } catch (err) {

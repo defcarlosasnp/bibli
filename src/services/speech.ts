@@ -1,5 +1,14 @@
 import { Capacitor, registerPlugin } from '@capacitor/core'
 import { TextToSpeech } from '@capacitor-community/text-to-speech'
+import {
+  NEURAL_PREFIX,
+  NEURAL_VOICES,
+  isNeuralVoice,
+  prefetchNeural,
+  speakNeural,
+  stopNeural,
+  storedNeuralVoices,
+} from './neuralVoice'
 
 /**
  * Voz del sistema. En la web usa speechSynthesis; en la app nativa el plugin de Capacitor,
@@ -19,6 +28,8 @@ export interface Voice {
   lang: string
   quality: VoiceQuality
   online: boolean
+  /** Voz neuronal de Bibli (generada dentro de la app). */
+  neural?: boolean
 }
 
 export const QUALITY_LABEL: Record<VoiceQuality, string> = {
@@ -146,7 +157,19 @@ export async function listVoices(): Promise<Voice[]> {
     all = webVoices.map((v) => toVoice(v, v.voiceURI))
   }
   const spanish = all.filter((v) => v.lang.toLowerCase().startsWith('es'))
-  return (spanish.length ? spanish : all).sort(compareVoices)
+  const system = (spanish.length ? spanish : all).sort(compareVoices)
+  // Las voces neuronales descargadas van primero: son las que mejor suenan
+  const stored = new Set(await storedNeuralVoices())
+  const neural: Voice[] = NEURAL_VOICES.filter((n) => stored.has(n.key)).map((n) => ({
+    id: NEURAL_PREFIX + n.key,
+    label: n.label,
+    detail: `${n.detail} · sin internet`,
+    lang: n.lang,
+    quality: 'natural',
+    online: false,
+    neural: true,
+  }))
+  return [...neural, ...system]
 }
 
 /** Dónde conseguir voces mejores en este dispositivo. */
@@ -214,6 +237,7 @@ let utterance: SpeechSynthesisUtterance | null = null
 
 /** Lee el texto y se resuelve al terminar o al interrumpirse con stopSpeaking(). */
 export function speak(text: string, { rate, voiceId }: SpeakOptions): Promise<void> {
+  if (isNeuralVoice(voiceId)) return speakNeural(text, voiceId, rate).catch(() => undefined)
   if (native) {
     // El plugin pide la posición en su lista, que puede cambiar: se busca por voiceURI en cada frase
     const index = voiceId != null ? nativeVoiceUris.indexOf(voiceId) : -1
@@ -240,7 +264,13 @@ export function speak(text: string, { rate, voiceId }: SpeakOptions): Promise<vo
   })
 }
 
+/** Con voz neuronal, empieza a generar la frase siguiente mientras suena la actual. */
+export function prefetchSpeech(text: string, voiceId: string | null) {
+  if (isNeuralVoice(voiceId)) prefetchNeural(text, voiceId)
+}
+
 export function stopSpeaking() {
+  stopNeural()
   if (native) TextToSpeech.stop().catch(() => undefined)
   else if (web) speechSynthesis.cancel()
 }
@@ -251,6 +281,15 @@ export function stopSpeaking() {
  * pantalla bloqueada): el motor se queda esperando y la frase no termina nunca.
  */
 export async function speakWithin(text: string, options: SpeakOptions): Promise<boolean> {
+  // La voz neuronal no depende de la red; la primera frase tarda más porque carga el modelo
+  if (isNeuralVoice(options.voiceId)) {
+    try {
+      await speakNeural(text, options.voiceId, options.rate)
+      return true
+    } catch {
+      return false
+    }
+  }
   // ~15 caracteres por segundo a velocidad 1; margen amplio para no cortar voces lentas
   const expected = text.length / (15 * options.rate)
   const limitMs = (8 + expected * 2.5) * 1000

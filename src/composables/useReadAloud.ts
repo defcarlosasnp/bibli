@@ -1,5 +1,6 @@
 import { computed, onBeforeUnmount, ref } from 'vue'
-import { VOICE_SAMPLE, listVoices, speak, speakWithin, stopSpeaking, type Voice } from '@/services/speech'
+import { VOICE_SAMPLE, listVoices, prefetchSpeech, speak, speakWithin, stopSpeaking, type Voice } from '@/services/speech'
+import { unlockNeuralAudio } from '@/services/neuralVoice'
 
 export interface Sentence {
   text: string
@@ -79,15 +80,25 @@ export function useReadAloud(source: ReadAloudSource, hooks: ReadAloudHooks = {}
   /**
    * Las voces de internet se cuelgan sin conexión (también cuando Android la corta con la pantalla
    * bloqueada). Entonces se sigue con la mejor voz del dispositivo hasta la próxima vez que se pulse ▶.
+   * Lo mismo si la voz neuronal falla (p. ej. un móvil sin memoria suficiente).
    */
   const offline = ref(false)
+  /** Mejor voz del sistema que no necesita internet, del mismo idioma si la hay. */
   const localVoiceId = computed(() => {
-    const local = voices.value.filter((v) => !v.online)
-    return (local.find((v) => v.lang === currentVoice.value?.lang) ?? local[0])?.id ?? null
+    const local = voices.value.filter((v) => !v.online && !v.neural)
+    const lang = currentVoice.value?.lang ?? ''
+    return (
+      local.find((v) => v.lang === lang) ??
+      local.find((v) => v.lang.slice(0, 2) === lang.slice(0, 2)) ??
+      local[0]
+    )?.id ?? null
   })
+  const canFallBack = computed(() => !!(currentVoice.value?.online || currentVoice.value?.neural))
   const speakingVoiceId = computed(() =>
-    offline.value && currentVoice.value?.online ? localVoiceId.value : effectiveVoiceId.value,
+    offline.value && canFallBack.value ? localVoiceId.value : effectiveVoiceId.value,
   )
+  /** Con la pantalla bloqueada lee el servicio nativo de Android, que solo sabe usar voces del sistema. */
+  const backgroundVoiceId = computed(() => (currentVoice.value?.neural ? localVoiceId.value : speakingVoiceId.value))
 
   let chunk: Sentence[] | null = null
   let index = 0
@@ -166,8 +177,12 @@ export function useReadAloud(source: ReadAloudSource, hooks: ReadAloudHooks = {}
         const s = chunk[index]
         sentence.value = s.text
         s.show?.()
-        const usedOnline = !!currentVoice.value?.online && !offline.value
-        const finished = await speakWithin(s.text, { rate: rate.value, voiceId: speakingVoiceId.value })
+        const usedOnline = canFallBack.value && !offline.value
+        const voice = speakingVoiceId.value
+        const speaking = speakWithin(s.text, { rate: rate.value, voiceId: voice })
+        const following = chunk[index + 1]
+        if (following) prefetchSpeech(following.text, voice)
+        const finished = await speaking
         if (id !== runId) return
         if (!finished && usedOnline && localVoiceId.value) {
           // Sin conexión: se repite la misma frase con la voz del dispositivo
@@ -195,6 +210,7 @@ export function useReadAloud(source: ReadAloudSource, hooks: ReadAloudHooks = {}
 
   async function play() {
     if (playing.value) return
+    unlockNeuralAudio()
     if (!active.value) {
       active.value = true
       spokeAny = false
@@ -338,6 +354,7 @@ export function useReadAloud(source: ReadAloudSource, hooks: ReadAloudHooks = {}
 
   /** Muestra de una voz. Pausa la lectura para no mezclar las dos. */
   function preview(id: string) {
+    unlockNeuralAudio()
     if (playing.value) pause()
     stopSpeaking()
     speak(VOICE_SAMPLE, { rate: rate.value, voiceId: id })
@@ -372,6 +389,7 @@ export function useReadAloud(source: ReadAloudSource, hooks: ReadAloudHooks = {}
     preview,
     setSleep,
     speakingVoiceId,
+    backgroundVoiceId,
     exportForBackground,
     resumeFromBackground,
   }

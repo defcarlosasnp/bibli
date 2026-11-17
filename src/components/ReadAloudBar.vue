@@ -1,7 +1,19 @@
 <script setup lang="ts">
-import { computed, type UnwrapNestedRefs } from 'vue'
+import { computed, reactive, type UnwrapNestedRefs } from 'vue'
+import { useQuasar } from 'quasar'
 import { RATES, type ReadAloud, type SleepMode } from '@/composables/useReadAloud'
 import { QUALITY_LABEL, openVoiceInstaller, voiceHelp } from '@/services/speech'
+import {
+  NEURAL_PREFIX,
+  NEURAL_VOICES,
+  downloadNeuralVoice,
+  neuralKey,
+  neuralSupported,
+  removeNeuralVoice,
+  type NeuralVoiceInfo,
+} from '@/services/neuralVoice'
+
+const $q = useQuasar()
 
 const props = defineProps<{
   ra: UnwrapNestedRefs<ReadAloud>
@@ -22,6 +34,42 @@ const sleepOptions = computed(() => [...SLEEP_OPTIONS, { label: `Al acabar ${pro
 
 const help = voiceHelp()
 const hasGoodVoice = computed(() => props.ra.voices.some((v) => v.quality === 'natural' || v.quality === 'good'))
+
+// ---------- Voces neuronales ----------
+
+/** Progreso de cada descarga en curso (0–1). Vive aquí para no perderlo al cerrar el menú. */
+const downloads = reactive<Record<string, number>>({})
+const missingNeural = computed(() =>
+  NEURAL_VOICES.filter((n) => !props.ra.voices.some((v) => v.id === NEURAL_PREFIX + n.key)),
+)
+
+async function download(n: NeuralVoiceInfo) {
+  if (n.key in downloads) return
+  downloads[n.key] = 0
+  try {
+    await downloadNeuralVoice(n.key, (f) => (downloads[n.key] = f))
+    await props.ra.refreshVoices()
+    props.ra.setVoice(NEURAL_PREFIX + n.key)
+    $q.notify({ message: `Voz «${n.label}» lista. Ya funciona sin internet 🎧`, icon: 'record_voice_over', color: 'positive' })
+  } catch {
+    $q.notify({ message: 'No se pudo descargar la voz. Revisa la conexión e inténtalo otra vez.', type: 'negative' })
+  } finally {
+    delete downloads[n.key]
+  }
+}
+
+function removeNeural(id: string, label: string) {
+  $q.dialog({
+    title: `¿Borrar la voz «${label}»?`,
+    message: 'Liberarás unos 63 MB. Podrás volver a descargarla cuando quieras.',
+    cancel: { flat: true, label: 'Cancelar' },
+    ok: { color: 'negative', unelevated: true, label: 'Borrar' },
+  }).onOk(async () => {
+    if (props.ra.voiceId === id) props.ra.setVoice(null)
+    await removeNeuralVoice(neuralKey(id))
+    await props.ra.refreshVoices()
+  })
+}
 
 function rateLabel(r: number) {
   return `${r.toLocaleString('es', { maximumFractionDigits: 2 })}×`
@@ -77,7 +125,58 @@ function rateLabel(r: number) {
                 </q-item-label>
                 <q-item-label caption>{{ v.detail }}</q-item-label>
               </q-item-section>
+              <q-item-section v-if="v.neural" side>
+                <q-btn
+                  flat
+                  round
+                  dense
+                  size="sm"
+                  icon="delete_outline"
+                  :aria-label="`Borrar la voz ${v.label}`"
+                  @click.stop="removeNeural(v.id, v.label)"
+                />
+              </q-item-section>
             </q-item>
+
+            <template v-if="neuralSupported && missingNeural.length">
+              <q-separator class="q-my-xs" />
+              <q-item-label header class="neural-header">
+                Voces neuronales de Bibli ✨
+                <div class="neural-sub">Suenan casi humanas y, una vez descargadas, funcionan sin internet.</div>
+              </q-item-label>
+              <q-item v-for="n in missingNeural" :key="n.key">
+                <q-item-section avatar><q-icon name="graphic_eq" color="accent" /></q-item-section>
+                <q-item-section>
+                  <q-item-label>{{ n.label }}</q-item-label>
+                  <q-item-label caption>{{ n.detail }}</q-item-label>
+                  <q-linear-progress
+                    v-if="n.key in downloads"
+                    :value="downloads[n.key]"
+                    color="accent"
+                    rounded
+                    class="q-mt-xs"
+                  />
+                </q-item-section>
+                <q-item-section side>
+                  <span v-if="n.key in downloads" class="text-caption">{{ Math.round(downloads[n.key] * 100) }}%</span>
+                  <q-btn
+                    v-else
+                    unelevated
+                    dense
+                    no-caps
+                    color="accent"
+                    icon="download"
+                    :label="`${n.sizeMB} MB`"
+                    :aria-label="`Descargar la voz ${n.label}`"
+                    @click.stop="download(n)"
+                  />
+                </q-item-section>
+              </q-item>
+              <q-item-label caption class="q-px-md q-pb-xs neural-note">
+                La primera descarga también trae el motor de voz (~30 MB, una sola vez). Con la pantalla
+                bloqueada se sigue leyendo con la voz del sistema.
+              </q-item-label>
+            </template>
 
             <q-separator class="q-my-xs" />
             <q-expansion-item
@@ -216,6 +315,16 @@ function rateLabel(r: number) {
 .quality--robotic {
   background: rgba(217, 83, 79, 0.15);
   color: #b2403c;
+}
+.neural-header {
+  padding-bottom: 4px;
+}
+.neural-sub,
+.neural-note {
+  font-size: 0.75rem;
+  font-weight: 400;
+  opacity: 0.8;
+  line-height: 1.3;
 }
 .help {
   font-size: 0.85rem;

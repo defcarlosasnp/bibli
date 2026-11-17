@@ -41,4 +41,6 @@ export default defineConfig({
   resolve: {
     alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) },
   },
+  // El worker de la voz neuronal carga partes del motor bajo demanda (import dinámico)
+  worker: { format: 'es' },
 })

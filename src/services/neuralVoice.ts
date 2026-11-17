@@ -37,9 +37,23 @@ let worker: Worker | null = null
 let nextId = 1
 const pending = new Map<number, { resolve(v: unknown): void; reject(e: Error): void; progress?(f: number): void }>()
 
+function failAll(message: string) {
+  for (const req of pending.values()) req.reject(new Error(message))
+  pending.clear()
+  worker?.terminate()
+  worker = null
+}
+
 function call<T>(msg: Record<string, unknown>, progress?: (f: number) => void): Promise<T> {
   if (!worker) {
-    worker = new Worker(new URL('../workers/piper.worker.ts', import.meta.url), { type: 'module' })
+    try {
+      worker = new Worker(new URL('../workers/piper.worker.ts', import.meta.url), { type: 'module' })
+    } catch (err) {
+      return Promise.reject(err)
+    }
+    // Si el worker no puede arrancar (navegador antiguo), que nada se quede esperando para siempre
+    worker.onerror = () => failAll('worker')
+    worker.onmessageerror = () => failAll('worker')
     worker.onmessage = (e: MessageEvent) => {
       const { id, result, error, progress: p } = e.data
       const req = pending.get(id)
@@ -59,7 +73,9 @@ function call<T>(msg: Record<string, unknown>, progress?: (f: number) => void): 
 
 export async function storedNeuralVoices(): Promise<string[]> {
   if (!neuralSupported) return []
-  return call<string[]>({ type: 'stored' }).catch(() => [])
+  // Nunca debe retrasar el ▶: si tarda, se sigue sin voces neuronales
+  const timeout = new Promise<string[]>((resolve) => setTimeout(() => resolve([]), 3000))
+  return Promise.race([call<string[]>({ type: 'stored' }).catch(() => []), timeout])
 }
 
 export async function downloadNeuralVoice(key: string, onProgress: (fraction: number) => void) {
@@ -99,7 +115,26 @@ export function prefetchNeural(text: string, voiceId: string) {
 const audio = typeof Audio !== 'undefined' ? new Audio() : null
 let token = 0
 let finishCurrent: (() => void) | null = null
-const SILENCE = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQAAAAA='
+/** 0,1 s de silencio en WAV (Safari ignora un archivo vacío y no se "desbloquea"). */
+function silenceUrl() {
+  const samples = 800
+  const buf = new ArrayBuffer(44 + samples * 2)
+  const v = new DataView(buf)
+  const str = (o: number, s: string) => [...s].forEach((c, i) => v.setUint8(o + i, c.charCodeAt(0)))
+  str(0, 'RIFF')
+  v.setUint32(4, 36 + samples * 2, true)
+  str(8, 'WAVEfmt ')
+  v.setUint32(16, 16, true)
+  v.setUint16(20, 1, true)
+  v.setUint16(22, 1, true)
+  v.setUint32(24, 8000, true)
+  v.setUint32(28, 16000, true)
+  v.setUint16(32, 2, true)
+  v.setUint16(34, 16, true)
+  str(36, 'data')
+  v.setUint32(40, samples * 2, true)
+  return URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }))
+}
 
 /**
  * Safari (iPhone) solo deja reproducir audio si el primer play() ocurre dentro de un toque.
@@ -108,7 +143,7 @@ const SILENCE = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+A
 export function unlockNeuralAudio() {
   if (!audio || audio.dataset.unlocked) return
   audio.dataset.unlocked = '1'
-  audio.src = SILENCE
+  audio.src = silenceUrl()
   audio.play().catch(() => delete audio.dataset.unlocked)
 }
 

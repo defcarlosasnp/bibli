@@ -1,38 +1,37 @@
 import { computed, onBeforeUnmount, ref } from 'vue'
-import { VOICE_SAMPLE, listVoices, prefetchSpeech, speak, speakWithin, stopSpeaking, type Voice } from '@/services/speech'
-import { unlockNeuralAudio } from '@/services/neuralVoice'
+import { VOICE_SAMPLE, listVoices, prefetchSpeech, speak, speakWithin, stopSpeaking, unlockSpeech, type Voice } from '@/services/speech'
 
 export interface Sentence {
   text: string
-  /** Resalta la frase en pantalla (y pasa de página si hace falta). */
+  /** Resalta la frase en pantalla (y pasa de pÃ¡gina si hace falta). */
   show?: () => void
 }
 
 /** Lo que cada formato (PDF, EPUB) tiene que saber hacer para que la app lo lea en voz alta. */
 export interface ReadAloudSource {
-  /** Frases desde la posición actual hasta el final de la página (PDF) o del capítulo (EPUB). */
+  /** Frases desde la posiciÃ³n actual hasta el final de la pÃ¡gina (PDF) o del capÃ­tulo (EPUB). */
   load(): Promise<Sentence[]>
-  /** Pasa a la página o capítulo siguiente. Devuelve false si el libro se acabó. */
+  /** Pasa a la pÃ¡gina o capÃ­tulo siguiente. Devuelve false si el libro se acabÃ³. */
   advance(): Promise<boolean>
   /** Quita el resaltado. */
   clear(): void
 
   // Para leer con la pantalla bloqueada (Android): el servicio nativo lee las frases siguientes
-  /** Identificador de la página (PDF) o capítulo (EPUB) actual. */
+  /** Identificador de la pÃ¡gina (PDF) o capÃ­tulo (EPUB) actual. */
   currentKey?(): unknown
-  /** Frases de las próximas páginas o capítulos, sin moverse de donde está. */
+  /** Frases de las prÃ³ximas pÃ¡ginas o capÃ­tulos, sin moverse de donde estÃ¡. */
   upcoming?(count: number): Promise<{ key: unknown; texts: string[] }[]>
-  /** Ir al principio de una página o capítulo (al volver a la app). */
+  /** Ir al principio de una pÃ¡gina o capÃ­tulo (al volver a la app). */
   goToChunk?(key: unknown): Promise<void>
 }
 
-/** Frases entregadas al servicio nativo y de qué página/capítulo sale cada una. */
+/** Frases entregadas al servicio nativo y de quÃ© pÃ¡gina/capÃ­tulo sale cada una. */
 export interface BackgroundPlan {
   sentences: string[]
   map: { key: unknown; index: number }[]
 }
 
-/** Lo que devuelve el servicio al volver: por qué frase de la cola iba. */
+/** Lo que devuelve el servicio al volver: por quÃ© frase de la cola iba. */
 export interface BackgroundState {
   active: boolean
   index: number
@@ -40,7 +39,7 @@ export interface BackgroundState {
   finished: boolean
 }
 
-/** Páginas o capítulos que se preparan por adelantado al bloquear la pantalla, y audio máximo. */
+/** PÃ¡ginas o capÃ­tulos que se preparan por adelantado al bloquear la pantalla, y audio mÃ¡ximo. */
 export const LOOKAHEAD_PDF_PAGES = 40
 export const LOOKAHEAD_EPUB_CHAPTERS = 4
 export const BACKGROUND_MAX_SECONDS = 90 * 60
@@ -50,25 +49,25 @@ export interface ReadAloudHooks {
   onChunkEnd?: () => void
   onFinish?: () => void
   onSleep?: () => void
-  /** Varias páginas seguidas sin texto: probablemente un PDF escaneado. */
+  /** Varias pÃ¡ginas seguidas sin texto: probablemente un PDF escaneado. */
   onNoText?: () => void
-  /** La voz de internet no respondió y se cambió a la del dispositivo. */
+  /** La voz de internet no respondiÃ³ y se cambiÃ³ a la del dispositivo. */
   onVoiceFallback?: () => void
 }
 
-/** 'chunk' = al acabar la página o el capítulo actual. */
+/** 'chunk' = al acabar la pÃ¡gina o el capÃ­tulo actual. */
 export type SleepMode = number | 'chunk' | null
 
 export const RATES = [0.75, 1, 1.25, 1.5, 1.75, 2]
 const EMPTY_CHUNKS_BEFORE_GIVING_UP = 5
 
 export function useReadAloud(source: ReadAloudSource, hooks: ReadAloudHooks = {}) {
-  /** Barra de reproducción visible. */
+  /** Barra de reproducciÃ³n visible. */
   const active = ref(false)
   const playing = ref(false)
   const sentence = ref('')
   const rate = ref(Number(localStorage.getItem('bibli.tts.rate')) || 1)
-  /** Voz elegida; null = automática (la mejor disponible). */
+  /** Voz elegida; null = automÃ¡tica (la mejor disponible). */
   const voiceId = ref<string | null>(localStorage.getItem('bibli.tts.voice'))
   const voices = ref<Voice[]>([])
   /** La lista ya viene ordenada: la primera es la mejor. */
@@ -78,9 +77,9 @@ export function useReadAloud(source: ReadAloudSource, hooks: ReadAloudHooks = {}
   const currentVoice = computed(() => voices.value.find((v) => v.id === effectiveVoiceId.value) ?? null)
 
   /**
-   * Las voces de internet se cuelgan sin conexión (también cuando Android la corta con la pantalla
-   * bloqueada). Entonces se sigue con la mejor voz del dispositivo hasta la próxima vez que se pulse ▶.
-   * Lo mismo si la voz neuronal falla (p. ej. un móvil sin memoria suficiente).
+   * Las voces de internet se cuelgan sin conexiÃ³n (tambiÃ©n cuando Android la corta con la pantalla
+   * bloqueada). Entonces se sigue con la mejor voz del dispositivo hasta la prÃ³xima vez que se pulse â–¶.
+   * Lo mismo si la voz neuronal falla (p. ej. un mÃ³vil sin memoria suficiente).
    */
   const offline = ref(false)
   /** Mejor voz del sistema que no necesita internet, del mismo idioma si la hay. */
@@ -102,7 +101,7 @@ export function useReadAloud(source: ReadAloudSource, hooks: ReadAloudHooks = {}
 
   let chunk: Sentence[] | null = null
   let index = 0
-  /** Cada reproducción tiene su número; al pausar o saltar se invalida la anterior. */
+  /** Cada reproducciÃ³n tiene su nÃºmero; al pausar o saltar se invalida la anterior. */
   let runId = 0
   let spokeAny = false
   let emptyStreak = 0
@@ -158,7 +157,7 @@ export function useReadAloud(source: ReadAloudSource, hooks: ReadAloudHooks = {}
     }
   }
 
-  // ---------- Reproducción ----------
+  // ---------- ReproducciÃ³n ----------
 
   async function run(id: number) {
     while (id === runId) {
@@ -185,14 +184,14 @@ export function useReadAloud(source: ReadAloudSource, hooks: ReadAloudHooks = {}
         const finished = await speaking
         if (id !== runId) return
         if (!finished && usedOnline && localVoiceId.value) {
-          // Sin conexión: se repite la misma frase con la voz del dispositivo
+          // Sin conexiÃ³n: se repite la misma frase con la voz del dispositivo
           offline.value = true
           hooks.onVoiceFallback?.()
           continue
         }
         spokeAny = true
         index++
-        // Con la pantalla bloqueada los temporizadores pueden retrasarse: se comprueba la hora también aquí
+        // Con la pantalla bloqueada los temporizadores pueden retrasarse: se comprueba la hora tambiÃ©n aquÃ­
         if (stopAfterSentence || (sleepEndsAt.value != null && Date.now() >= sleepEndsAt.value)) return fallAsleep()
       }
       chunk = null
@@ -210,7 +209,7 @@ export function useReadAloud(source: ReadAloudSource, hooks: ReadAloudHooks = {}
 
   async function play() {
     if (playing.value) return
-    unlockNeuralAudio()
+    unlockSpeech()
     if (!active.value) {
       active.value = true
       spokeAny = false
@@ -219,7 +218,7 @@ export function useReadAloud(source: ReadAloudSource, hooks: ReadAloudHooks = {}
       hooks.onStart?.()
     }
     playing.value = true
-    offline.value = false // quizá ya vuelve a haber conexión
+    offline.value = false // quizÃ¡ ya vuelve a haber conexiÃ³n
     keepAwake(true)
     run(++runId)
   }
@@ -254,7 +253,7 @@ export function useReadAloud(source: ReadAloudSource, hooks: ReadAloudHooks = {}
     run(runId)
   }
 
-  /** El usuario cambió de página: se sigue leyendo desde ahí. */
+  /** El usuario cambiÃ³ de pÃ¡gina: se sigue leyendo desde ahÃ­. */
   function jump() {
     if (!active.value) return
     chunk = null
@@ -289,8 +288,8 @@ export function useReadAloud(source: ReadAloudSource, hooks: ReadAloudHooks = {}
   // ---------- Pantalla bloqueada (Android) ----------
 
   /**
-   * Para el bucle de JavaScript (el WebView se congelará) y prepara las frases que leerá el servicio
-   * nativo: lo que queda de la página o capítulo y los siguientes, hasta `maxSeconds` de audio
+   * Para el bucle de JavaScript (el WebView se congelarÃ¡) y prepara las frases que leerÃ¡ el servicio
+   * nativo: lo que queda de la pÃ¡gina o capÃ­tulo y los siguientes, hasta `maxSeconds` de audio
    * aproximado, o menos si el temporizador para dormir acaba antes.
    */
   async function exportForBackground(maxSeconds: number, chunksAhead: number): Promise<BackgroundPlan | null> {
@@ -347,14 +346,14 @@ export function useReadAloud(source: ReadAloudSource, hooks: ReadAloudHooks = {}
     }
   }
 
-  /** Vuelve a pedir las voces (p. ej. después de descargar una nueva en los ajustes). */
+  /** Vuelve a pedir las voces (p. ej. despuÃ©s de descargar una nueva en los ajustes). */
   async function refreshVoices() {
     voices.value = await listVoices().catch(() => [])
   }
 
   /** Muestra de una voz. Pausa la lectura para no mezclar las dos. */
   function preview(id: string) {
-    unlockNeuralAudio()
+    unlockSpeech()
     if (playing.value) pause()
     stopSpeaking()
     speak(VOICE_SAMPLE, { rate: rate.value, voiceId: id })

@@ -8,6 +8,7 @@ import {
   speakNeural,
   stopNeural,
   storedNeuralVoices,
+  unlockNeuralAudio,
 } from './neuralVoice'
 
 /**
@@ -263,6 +264,31 @@ export function speak(text: string, { rate, voiceId }: SpeakOptions): Promise<vo
     speechSynthesis.speak(u)
   })
 }
+
+/**
+ * iPhone/iPad (Safari) solo deja hablar a una web si la primera locución empieza dentro del toque
+ * del usuario; si llega después de un `await`, la descarta en silencio. Hay que llamarlo de forma
+ * síncrona al pulsar ▶ o "escuchar muestra".
+ */
+export function unlockSpeech() {
+  // Safari 17+: que el audio suene como reproductor (también con el interruptor de silencio activado)
+  const session = (navigator as Navigator & { audioSession?: { type: string } }).audioSession
+  if (session) {
+    try {
+      session.type = 'playback'
+    } catch {
+      // no soportado
+    }
+  }
+  unlockNeuralAudio()
+  if (!native && web && !unlocked) {
+    unlocked = true
+    const u = new SpeechSynthesisUtterance(' ')
+    u.volume = 0
+    speechSynthesis.speak(u)
+  }
+}
+let unlocked = false
 
 /** Con voz neuronal, empieza a generar la frase siguiente mientras suena la actual. */
 export function prefetchSpeech(text: string, voiceId: string | null) {

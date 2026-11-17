@@ -443,12 +443,14 @@ let epubMark: string | null = null
 function setEpubMark(cfi: string | null) {
   const r = rendition.value
   if (!r) return
-  if (epubMark) r.annotations.remove(epubMark, 'highlight')
+  if (epubMark) r.annotations.remove(epubMark, 'underline')
   epubMark = cfi
+  // Raya debajo (no relleno) para no confundirla con los subrayados de colores del lector
   if (cfi) {
-    r.annotations.highlight(cfi, {}, undefined, 'tts-hl', {
-      fill: '#f29e38',
-      'fill-opacity': '0.35',
+    r.annotations.underline(cfi, {}, undefined, 'tts-ul', {
+      stroke: '#e8891c',
+      'stroke-opacity': '0.95',
+      'stroke-width': '3',
       'mix-blend-mode': 'normal',
     })
   }
@@ -1578,10 +1580,10 @@ function onSwipe({ direction }: { direction?: string }) {
   background: white;
 }
 /* Frase que se está leyendo en voz alta */
+/* Frase que se está leyendo: raya naranja debajo, distinta del relleno de los subrayados */
 .tts-hl {
   position: absolute;
-  border-radius: 3px;
-  background: rgba(242, 158, 56, 0.35);
+  border-bottom: 3px solid rgba(232, 137, 28, 0.95);
   pointer-events: none;
   transition:
     left 0.2s,
@@ -1589,7 +1591,7 @@ function onSwipe({ direction }: { direction?: string }) {
     width 0.2s;
 }
 .night .tts-hl {
-  background: rgba(242, 158, 56, 0.45);
+  border-bottom-color: #ffb04d;
 }
 .search-hl {
   position: absolute;

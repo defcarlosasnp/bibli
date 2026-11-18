@@ -848,6 +848,8 @@ const pdfPageHighlights = computed(() =>
 
 /** Barras de arriba y abajo visibles (tocar el centro las oculta para leer a pantalla completa). */
 const barsVisible = ref(true)
+/** Pantalla estrecha (móvil en vertical): cabecera con menos botones. */
+const compactBar = computed(() => $q.screen.width < 600)
 /** Cómo empezó el último toque: con ratón no se pasa página al hacer clic en el texto. */
 let tapStart = { mouse: true, hadSelection: false }
 let annotationTapAt = 0
@@ -1308,24 +1310,55 @@ function onSwipe({ direction }: { direction?: string }) {
           {{ book?.title }}
           <div v-if="book?.author" class="text-caption ellipsis reader-author">{{ book.author }}</div>
         </q-toolbar-title>
-        <template v-if="book?.format === 'pdf'">
-          <q-btn flat round icon="zoom_out" @click="setZoom(-0.25)" />
-          <q-btn flat round icon="zoom_in" @click="setZoom(0.25)" />
+        <!-- Móvil: letra/zoom y modo noche juntos en un menú, para que se lea el título -->
+        <q-btn v-if="compactBar" flat round dense icon="text_fields" aria-label="Ajustes de lectura">
+          <q-menu anchor="bottom middle" self="top middle" class="reading-menu">
+            <div class="row no-wrap items-center q-pa-sm q-gutter-x-xs">
+              <template v-if="book?.format === 'pdf'">
+                <q-btn flat round icon="zoom_out" aria-label="Alejar" @click="setZoom(-0.25)" />
+                <q-btn flat round icon="zoom_in" aria-label="Acercar" @click="setZoom(0.25)" />
+              </template>
+              <template v-else>
+                <q-btn flat round icon="text_decrease" aria-label="Letra más pequeña" @click="setFontSize(-10)" />
+                <q-btn flat round icon="text_increase" aria-label="Letra más grande" @click="setFontSize(10)" />
+              </template>
+              <q-separator vertical />
+              <q-btn
+                flat
+                round
+                :icon="night ? 'light_mode' : 'dark_mode'"
+                :aria-label="night ? 'Modo día' : 'Modo nocturno'"
+                @click="toggleNight"
+              />
+            </div>
+          </q-menu>
+        </q-btn>
+        <template v-else>
+          <template v-if="book?.format === 'pdf'">
+            <q-btn flat round icon="zoom_out" @click="setZoom(-0.25)" />
+            <q-btn flat round icon="zoom_in" @click="setZoom(0.25)" />
+          </template>
+          <template v-else-if="book?.format === 'epub'">
+            <q-btn flat round icon="text_decrease" @click="setFontSize(-10)" />
+            <q-btn flat round icon="text_increase" @click="setFontSize(10)" />
+          </template>
         </template>
-        <template v-else-if="book?.format === 'epub'">
-          <q-btn flat round icon="text_decrease" @click="setFontSize(-10)" />
-          <q-btn flat round icon="text_increase" @click="setFontSize(10)" />
-        </template>
-        <q-btn flat round icon="search" aria-label="Buscar en el libro" @click="openSearch">
+        <q-btn flat round :dense="compactBar" icon="search" aria-label="Buscar en el libro" @click="openSearch">
           <q-tooltip>Buscar en el libro (Ctrl+F)</q-tooltip>
         </q-btn>
-        <q-btn flat round :icon="night ? 'light_mode' : 'dark_mode'" @click="toggleNight">
+        <q-btn v-if="!compactBar" flat round :icon="night ? 'light_mode' : 'dark_mode'" @click="toggleNight">
           <q-tooltip>{{ night ? 'Modo día' : 'Modo nocturno' }}</q-tooltip>
         </q-btn>
-        <q-btn flat round :icon="isBookmarked ? 'bookmark' : 'bookmark_border'" @click="toggleBookmark">
+        <q-btn
+          flat
+          round
+          :dense="compactBar"
+          :icon="isBookmarked ? 'bookmark' : 'bookmark_border'"
+          @click="toggleBookmark"
+        >
           <q-tooltip>{{ isBookmarked ? 'Quitar marcador' : 'Añadir marcador' }} (B)</q-tooltip>
         </q-btn>
-        <q-btn flat round icon="list" @click="drawer = !drawer">
+        <q-btn flat round :dense="compactBar" icon="list" @click="drawer = !drawer">
           <q-tooltip>Marcadores e índice</q-tooltip>
         </q-btn>
       </q-toolbar>
@@ -1569,7 +1602,7 @@ function onSwipe({ direction }: { direction?: string }) {
         />
         <transition name="buddy">
           <ReaderBuddy
-            v-if="showBuddy && !loading"
+            v-if="showBuddy && !loading && (barsVisible || readAloud.active)"
             ref="buddy"
             :listening="readAloud.playing"
             :bottom="footerHeight"

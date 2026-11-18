@@ -17,6 +17,9 @@ const props = withDefaults(
 const baseOutfit = { ...outfitFor(), glasses: 'reading' as const }
 const outfit = computed(() => ({ ...baseOutfit, headphones: props.listening }))
 
+/** Más pequeño en el móvil, para tapar menos texto. */
+const owlSize = window.innerWidth < 600 ? 58 : 72
+
 const talking = ref(false)
 const text = ref('')
 const mood = ref<OwlMood>('idle')
@@ -64,7 +67,7 @@ defineExpose({ say })
     <transition name="pop">
       <div v-if="talking" class="bubble" @click="hide">{{ text }}</div>
     </transition>
-    <LumiOwl :size="72" :mood="shownMood" :outfit="outfit" class="owl" @click="onTap" />
+    <LumiOwl :size="owlSize" :mood="shownMood" :outfit="outfit" class="owl" @click="onTap" />
   </div>
 </template>
 
@@ -73,13 +76,13 @@ defineExpose({ say })
   position: fixed;
   right: calc(10px + env(safe-area-inset-right, 0px));
   bottom: calc(60px + var(--q-safe-area-inset-bottom, 0px));
-  z-index: 2000;
+  /* Detrás de la barra inferior (z-index 2000): en reposo solo asoma la cabeza y apenas tapa texto */
+  z-index: 1999;
   display: flex;
   align-items: flex-end;
   gap: 6px;
   pointer-events: none;
-  /* Sentado sobre la barra inferior: si baja más, tapa el botón de página siguiente */
-  transform: translateY(6px);
+  transform: translateY(45%);
   transition:
     transform 0.45s cubic-bezier(0.3, 1.5, 0.5, 1),
     bottom 0.3s ease;

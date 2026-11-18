@@ -309,12 +309,17 @@ export function stopSpeaking() {
 export async function speakWithin(text: string, options: SpeakOptions): Promise<boolean> {
   // La voz neuronal no depende de la red; la primera frase tarda más porque carga el modelo
   if (isNeuralVoice(options.voiceId)) {
-    try {
-      await speakNeural(text, options.voiceId, options.rate)
-      return true
-    } catch {
-      return false
-    }
+    // Generar la frase puede tardar (y la primera carga el modelo), pero si se pasa mucho,
+    // se sigue con la voz del sistema en lugar de quedarse en silencio.
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const tooSlow = new Promise<false>((resolve) => (timer = setTimeout(() => resolve(false), 20000 + text.length * 150)))
+    const ok = await Promise.race([
+      speakNeural(text, options.voiceId, options.rate).then(() => true, () => false),
+      tooSlow,
+    ])
+    clearTimeout(timer)
+    if (!ok) stopSpeaking()
+    return ok
   }
   // ~15 caracteres por segundo a velocidad 1; margen amplio para no cortar voces lentas
   const expected = text.length / (15 * options.rate)

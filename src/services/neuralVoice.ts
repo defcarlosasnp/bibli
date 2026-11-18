@@ -21,14 +21,36 @@ export const NEURAL_VOICES: NeuralVoiceInfo[] = [
   { key: 'en_US-hfc_female-medium', label: 'Hannah', detail: 'Inglés (EE. UU.) · voz femenina, para libros en inglés', lang: 'en-US', sizeMB: 63 },
 ]
 
+/**
+ * En el navegador del móvil (y dentro del APK) la voz se genera mucho más lento que en tiempo real:
+ * medido en Android, 26 s para 12 s de audio con la voz buena y casi 1:1 con la más ligera, así que
+ * nunca llegaba a sonar. Solo se ofrece en ordenadores.
+ */
+const isMobile =
+  typeof navigator !== 'undefined' &&
+  (/Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) ||
+    (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1))
+
 export const neuralSupported =
+  !isMobile &&
   typeof Worker !== 'undefined' &&
   typeof WebAssembly === 'object' &&
   typeof navigator !== 'undefined' &&
   !!navigator.storage &&
   'getDirectory' in navigator.storage
 
-export const isNeuralVoice = (id: string | null | undefined): id is string => !!id?.startsWith(NEURAL_PREFIX)
+/** En el móvil, borra las voces que se hubieran descargado antes (~90 MB que ya no sirven). */
+export async function freeNeuralStorageOnMobile() {
+  if (!isMobile || !navigator.storage?.getDirectory) return
+  try {
+    const root = await navigator.storage.getDirectory()
+    for (const name of ['piper', 'piper-runtime']) await root.removeEntry(name, { recursive: true }).catch(() => undefined)
+  } catch {
+    // sin OPFS: no hay nada que borrar
+  }
+}
+
+export const isNeuralVoice =(id: string | null | undefined): id is string => !!id?.startsWith(NEURAL_PREFIX)
 export const neuralKey = (id: string) => id.slice(NEURAL_PREFIX.length)
 
 // ---------- Worker ----------

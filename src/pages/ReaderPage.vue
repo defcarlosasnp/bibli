@@ -281,13 +281,32 @@ const epubThemes = {
   },
 }
 
+/**
+ * Safari (iPhone, iPad, Mac) no entrega los toques ni la selección de texto de un iframe con sandbox sin
+ * "allow-scripts", y entonces no se puede subrayar. Ahí se permite, pero antes se quita del libro
+ * cualquier código (scripts y atributos on…), así que el EPUB sigue sin poder ejecutar nada.
+ */
+const appleWebKit =
+  /iPhone|iPad|iPod/.test(navigator.userAgent) ||
+  (/Macintosh/.test(navigator.userAgent) && /Safari/.test(navigator.userAgent) && !/Chrome|Chromium|Edg|Firefox/.test(navigator.userAgent))
+
+function stripScripts(doc: Document) {
+  doc.querySelectorAll('script, iframe, object, embed').forEach((el) => el.remove())
+  doc.querySelectorAll('*').forEach((el) => {
+    for (const attr of [...el.attributes]) {
+      if (/^on/i.test(attr.name) || /^\s*javascript:/i.test(attr.value)) el.removeAttribute(attr.name)
+    }
+  })
+}
+
 async function initEpub(data: ArrayBuffer, meta: Book) {
   epub.value = ePub(data)
+  if (appleWebKit) epub.value.spine.hooks.content.register((doc: Document) => stripScripts(doc))
   rendition.value = epub.value.renderTo(viewport.value!, {
     width: '100%',
     height: '100%',
     spread: 'auto',
-    allowScriptedContent: false,
+    allowScriptedContent: appleWebKit,
   })
   rendition.value.themes.register('day', epubThemes.day)
   rendition.value.themes.register('night', epubThemes.night)

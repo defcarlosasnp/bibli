@@ -70,6 +70,7 @@ const epub = shallowRef<EpubBook>()
 const rendition = shallowRef<Rendition>()
 const fontSize = ref(100)
 const epubPercent = ref<number | null>(null)
+const epubLocationsReady = ref(false)
 const toc = shallowRef<NavItem[]>([])
 
 const bookId = Number(props.id)
@@ -177,10 +178,19 @@ onMounted(async () => {
   else await initEpub(data, meta)
   window.addEventListener('keydown', onKey)
   window.addEventListener('pointerdown', markActivity)
+  window.addEventListener('pointerdown', onTapStart, true)
   document.addEventListener('selectionchange', onDocumentSelectionChange)
   resizeObserver.observe(viewport.value!)
   setAchievementAnnouncer((a) => lumiSay(`${a.icon} ${a.lumi}`, 'excited', 6000))
   greetReader(meta)
+  if (window.matchMedia('(pointer: coarse)').matches && !localStorage.getItem('bibli.tapHint')) {
+    localStorage.setItem('bibli.tapHint', '1')
+    $q.notify({
+      message: 'Toca los bordes de la página para pasarla, y el centro para leer a pantalla completa',
+      icon: 'touch_app',
+      timeout: 5000,
+    })
+  }
   // Desde "Mis frases": abrir directamente en el subrayado
   if (typeof route.query.at === 'string') goTo(route.query.at)
 })
@@ -191,6 +201,7 @@ onBeforeUnmount(() => {
   highlightsSub.unsubscribe()
   setAchievementAnnouncer(null)
   window.removeEventListener('pointerdown', markActivity)
+  window.removeEventListener('pointerdown', onTapStart, true)
   document.removeEventListener('selectionchange', onDocumentSelectionChange)
   window.removeEventListener('keydown', onKey)
   resizeObserver.disconnect()
@@ -200,6 +211,8 @@ onBeforeUnmount(() => {
 })
 
 // ---------- PDF ----------
+
+const PDF_MARGIN = 14
 
 async function initPdf(data: ArrayBuffer, meta: Book) {
   const opened = await openPdf(data)
@@ -223,7 +236,9 @@ async function renderPdfPage(dir = 0) {
   const p = await pdf.value.getPage(page.value)
   const base = p.getViewport({ scale: 1 })
   const box = viewport.value.getBoundingClientRect()
-  const fit = Math.min(box.width / base.width, box.height / base.height) * zoom.value
+  // Margen alrededor de la hoja (el mismo que el padding de .pdf-viewport)
+  const m = 2 * PDF_MARGIN
+  const fit = Math.min((box.width - m) / base.width, (box.height - m) / base.height) * zoom.value
   const dpr = window.devicePixelRatio || 1
   const vp = p.getViewport({ scale: fit * dpr })
   canvas.value.width = Math.floor(vp.width)
@@ -267,14 +282,43 @@ function goToPdfPage(n: number, byReadAloud = false) {
   if (!byReadAloud) readAloud.jump()
 }
 
-function onPageInput(e: Event) {
-  goToPdfPage(Number((e.target as HTMLInputElement).value))
+// ---------- Barra de progreso (deslizar para ir a otra parte del libro) ----------
+
+/** Valor mientras se arrastra; null = sigue la página actual. EPUB: 0–1000 (décimas de %). */
+const sliderDrag = ref<number | null>(null)
+const sliderMax = computed(() => (book.value?.format === 'pdf' ? pageCount.value : 1000))
+const sliderValue = computed(() => {
+  if (sliderDrag.value != null) return sliderDrag.value
+  return book.value?.format === 'pdf' ? page.value : Math.round((epubPercent.value ?? 0) * 1000)
+})
+const sliderDisabled = computed(() => (book.value?.format === 'pdf' ? pageCount.value < 2 : !epubLocationsReady.value))
+const sliderLabel = computed(() =>
+  book.value?.format === 'pdf' ? `Página ${sliderValue.value}` : `${Math.round(sliderValue.value / 10)}%`,
+)
+
+function onSliderChange(v: number | null) {
+  sliderDrag.value = null
+  if (v == null) return
+  if (book.value?.format === 'pdf') goToPdfPage(v)
+  else if (epub.value && epubLocationsReady.value) {
+    rendition.value?.display(epub.value.locations.cfiFromPercentage(v / 1000)).then(() => readAloud.jump())
+  }
+}
+
+/** Tocar "12 / 300" permite escribir la página exacta. */
+function askPdfPage() {
+  $q.dialog({
+    title: 'Ir a la página',
+    prompt: { model: String(page.value), type: 'number', isValid: (v: string) => +v >= 1 && +v <= pageCount.value },
+    message: `Del 1 al ${pageCount.value}`,
+    cancel: true,
+  }).onOk((v: string) => goToPdfPage(Number(v)))
 }
 
 // ---------- EPUB ----------
 
 const epubThemes = {
-  day: { body: { color: '#222 !important', background: '#fff !important' } },
+  day: { body: { color: '#2b2018 !important', background: '#fdf9f2 !important' } },
   night: {
     body: { color: '#ddd !important', background: '#121212 !important' },
     a: { color: '#ffb300 !important' },
@@ -337,6 +381,7 @@ async function initEpub(data: ArrayBuffer, meta: Book) {
   await epub.value.ready
   await epub.value.locations.generate(1600)
   locationsReady = true
+  epubLocationsReady.value = true
   const current = rendition.value.currentLocation() as unknown as { start?: { cfi: string; href: string } }
   if (current?.start) {
     const pct = percentAt(current.start.cfi)
@@ -799,16 +844,62 @@ const pdfPageHighlights = computed(() =>
   book.value?.format === 'pdf' ? highlights.value.filter((h) => h.position === String(page.value) && h.rects) : [],
 )
 
-/** Tocar un subrayado del PDF abre su nota (la capa de texto está encima y se lleva el toque). */
-function onPdfPageClick(e: MouseEvent) {
-  if (window.getSelection()?.toString()) return
-  const box = (e.currentTarget as HTMLElement).getBoundingClientRect()
-  const x = (e.clientX - box.left) / box.width
-  const y = (e.clientY - box.top) / box.height
-  const hit = pdfPageHighlights.value.find((h) =>
-    h.rects!.some((r) => x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h),
-  )
-  if (hit) openHighlight(hit.id)
+// ---------- Toques: bordes para pasar página, centro para leer sin barras ----------
+
+/** Barras de arriba y abajo visibles (tocar el centro las oculta para leer a pantalla completa). */
+const barsVisible = ref(true)
+/** Cómo empezó el último toque: con ratón no se pasa página al hacer clic en el texto. */
+let tapStart = { mouse: true, hadSelection: false }
+let annotationTapAt = 0
+
+function onTapStart(e: PointerEvent) {
+  tapStart = { mouse: e.pointerType === 'mouse', hadSelection: !!selection.value }
+}
+
+/** x en coordenadas de la ventana. halves: con ratón fuera de la hoja basta con el lado. */
+function handleReaderTap(x: number, halves = false) {
+  if (tapStart.hadSelection || !viewport.value) return
+  const box = viewport.value.getBoundingClientRect()
+  const f = (x - box.left) / box.width
+  const edge = halves ? 0.5 : 0.28
+  if (f < edge) prev()
+  else if (f > 1 - edge) next()
+  else if (!tapStart.mouse) barsVisible.value = !barsVisible.value
+}
+
+/** PDF: tocar un subrayado abre su nota; tocar los bordes pasa página. */
+function onViewportClick(e: MouseEvent) {
+  if (book.value?.format !== 'pdf' || window.getSelection()?.toString()) return
+  const pageEl = (e.target as HTMLElement).closest('.pdf-page')
+  if (pageEl) {
+    const box = pageEl.getBoundingClientRect()
+    const x = (e.clientX - box.left) / box.width
+    const y = (e.clientY - box.top) / box.height
+    const hit = pdfPageHighlights.value.find((h) =>
+      h.rects!.some((r) => x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h),
+    )
+    if (hit) {
+      openHighlight(hit.id)
+      return
+    }
+    // Con ratón, hacer clic en el texto sirve para seleccionar, no para pasar página
+    if (tapStart.mouse) return
+  }
+  handleReaderTap(e.clientX, tapStart.mouse)
+}
+
+/** EPUB: el toque llega desde dentro del iframe del capítulo. */
+function onEpubClick(e: MouseEvent) {
+  if (tapStart.mouse) return
+  const target = e.target as Element | null
+  if (target?.closest?.('a')) return
+  const win = e.view as Window | null
+  if (win?.getSelection()?.toString()) return
+  const x = (win?.frameElement?.getBoundingClientRect().left ?? 0) + e.clientX
+  // Si el toque era sobre un subrayado, se abre su nota y no se pasa página
+  setTimeout(() => {
+    if (Date.now() - annotationTapAt > 400) handleReaderTap(x)
+  }, 30)
 }
 
 // EPUB: epub.js avisa de la selección dentro del capítulo y dibuja los subrayados como anotaciones
@@ -826,7 +917,10 @@ function syncEpubHighlights() {
   }
   for (const h of highlights.value) {
     if (epubDrawn.has(h.id)) continue
-    r.annotations.highlight(h.position, { id: h.id }, () => openHighlight(h.id), 'hl-user', {
+    r.annotations.highlight(h.position, { id: h.id }, () => {
+      annotationTapAt = Date.now()
+      openHighlight(h.id)
+    }, 'hl-user', {
       fill: HIGHLIGHT_COLORS[h.color].solid,
       'fill-opacity': '0.4',
       'mix-blend-mode': 'normal',
@@ -843,7 +937,9 @@ function watchEpubSelection(r: Rendition) {
     epubSelectionWindow = contents.window
     selection.value = { text, position: cfiRange }
   })
+  r.on('click', onEpubClick)
   r.hooks.content.register((contents: { document: Document }) => {
+    contents.document.addEventListener('pointerdown', onTapStart, true)
     contents.document.addEventListener('selectionchange', () => {
       if (book.value?.format === 'epub' && contents.document.getSelection()?.isCollapsed) selection.value = null
     })
@@ -1205,7 +1301,7 @@ function onSwipe({ direction }: { direction?: string }) {
 
 <template>
   <q-layout view="hHh lpR fFf">
-    <q-header elevated class="reader-bar">
+    <q-header :model-value="barsVisible" elevated class="reader-bar">
       <q-toolbar>
         <q-btn flat round icon="arrow_back" @click="router.push({ name: 'library' })" />
         <q-toolbar-title class="text-subtitle1 font-display text-weight-bold">
@@ -1316,7 +1412,7 @@ function onSwipe({ direction }: { direction?: string }) {
       </q-scroll-area>
     </q-drawer>
 
-    <q-footer class="reader-bar reader-bar--bottom">
+    <q-footer :model-value="barsVisible || readAloud.active" class="reader-bar reader-bar--bottom">
       <q-resize-observer @resize="(s) => (footerHeight = s.height)" />
       <transition name="tts">
         <ReadAloudBar
@@ -1337,22 +1433,33 @@ function onSwipe({ direction }: { direction?: string }) {
         >
           <q-tooltip>{{ readAloud.active ? 'Dejar de escuchar' : 'Escuchar (Lumi te lee)' }}</q-tooltip>
         </q-btn>
-        <q-space />
-        <template v-if="book?.format === 'pdf' && pageCount">
-          <q-input
-            :model-value="page"
-            type="number"
-            dense
-            dark
-            borderless
-            input-class="text-center text-white"
-            style="width: 60px"
-            @change="onPageInput"
-          />
-          <span>/ {{ pageCount }}</span>
-        </template>
-        <span v-else-if="epubPercent != null">{{ Math.round(epubPercent * 100) }}%</span>
-        <q-space />
+        <q-slider
+          v-if="book && sliderMax"
+          class="reader-slider"
+          :model-value="sliderValue"
+          :min="book.format === 'pdf' ? 1 : 0"
+          :max="sliderMax"
+          :step="1"
+          :disable="sliderDisabled"
+          label
+          :label-value="sliderLabel"
+          color="accent"
+          track-color="white"
+          dark
+          aria-label="Avance en el libro"
+          @update:model-value="(v) => (sliderDrag = v)"
+          @change="onSliderChange"
+        />
+        <q-space v-else />
+        <button
+          v-if="book?.format === 'pdf' && pageCount"
+          class="reader-progress reader-progress--btn"
+          aria-label="Ir a una página"
+          @click="askPdfPage"
+        >
+          {{ page }}<span class="reader-progress__total"> / {{ pageCount }}</span>
+        </button>
+        <span v-else-if="epubPercent != null" class="reader-progress">{{ Math.round(epubPercent * 100) }}%</span>
         <q-btn flat round icon="chevron_right" @click="next" />
       </q-toolbar>
     </q-footer>
@@ -1366,9 +1473,10 @@ function onSwipe({ direction }: { direction?: string }) {
           v-touch-swipe.horizontal="onSwipe"
           class="viewport"
           :class="{ 'pdf-viewport': book?.format === 'pdf' }"
+          @click="onViewportClick"
         >
-          <div v-if="book?.format === 'pdf'" class="pdf-page" @click="onPdfPageClick">
-            <canvas ref="canvas" class="shadow-4" />
+          <div v-if="book?.format === 'pdf'" class="pdf-page">
+            <canvas ref="canvas" />
             <template v-for="h in pdfPageHighlights" :key="h.id">
               <div
                 v-for="(r, i) in h.rects"
@@ -1388,6 +1496,14 @@ function onSwipe({ direction }: { direction?: string }) {
             <div ref="textLayerEl" class="textLayer" />
           </div>
         </div>
+        <template v-if="!loading">
+          <button class="side-nav side-nav--prev" aria-label="Página anterior" @click="prev">
+            <q-icon name="chevron_left" size="32px" />
+          </button>
+          <button class="side-nav side-nav--next" aria-label="Página siguiente" @click="next">
+            <q-icon name="chevron_right" size="32px" />
+          </button>
+        </template>
         <div v-if="searchActive && searchIndex >= 0 && !selection" class="search-nav shadow-4">
           <q-btn flat dense round icon="search" size="sm" aria-label="Ver resultados" @click="openSearch" />
           <span class="search-nav__count">{{ searchIndex + 1 }} / {{ searchResults.length }}</span>
@@ -1479,6 +1595,71 @@ function onSwipe({ direction }: { direction?: string }) {
 }
 .reader-page {
   display: flex;
+  position: relative;
+  background: #fdf9f2;
+}
+.reader-slider {
+  flex: 1;
+  margin: 0 12px;
+  min-width: 80px;
+}
+.reader-progress {
+  font-variant-numeric: tabular-nums;
+  font-size: 0.9rem;
+  white-space: nowrap;
+  padding: 4px 8px;
+  min-width: 48px;
+  text-align: center;
+}
+.reader-progress--btn {
+  background: rgba(255, 255, 255, 0.12);
+  border: 0;
+  border-radius: 999px;
+  color: inherit;
+  font-family: inherit;
+  cursor: pointer;
+}
+.reader-progress__total {
+  opacity: 0.7;
+}
+/* Flechas a los lados: solo con ratón, aparecen al pasar por encima */
+.side-nav {
+  position: absolute;
+  top: 50%;
+  translate: 0 -50%;
+  z-index: 3;
+  width: 44px;
+  height: 96px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  color: #fff;
+  background: rgba(59, 42, 32, 0.45);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+.side-nav--prev {
+  left: 0;
+  border-radius: 0 12px 12px 0;
+}
+.side-nav--next {
+  right: 0;
+  border-radius: 12px 0 0 12px;
+}
+@media (hover: hover) and (pointer: fine) {
+  .reader-page:hover .side-nav {
+    opacity: 0.55;
+  }
+  .reader-page .side-nav:hover {
+    opacity: 1;
+  }
+}
+@media not ((hover: hover) and (pointer: fine)) {
+  .side-nav {
+    display: none;
+  }
 }
 .pdf-viewport {
   perspective: 900px;
@@ -1508,10 +1689,12 @@ function onSwipe({ direction }: { direction?: string }) {
   display: flex;
   justify-content: center;
   align-items: flex-start;
-  background: #5d5d5d;
+  padding: 14px; /* = PDF_MARGIN */
+  /* Mesa de madera clara alrededor de la hoja, a juego con la app */
+  background: radial-gradient(ellipse at center, #efe5d6 0%, #e2d3bf 100%);
 }
 .night .pdf-viewport {
-  background: #000;
+  background: #0d0b0a;
 }
 .pdf-page {
   position: relative;
@@ -1597,6 +1780,13 @@ function onSwipe({ direction }: { direction?: string }) {
 .pdf-viewport canvas {
   display: block;
   background: white;
+  border-radius: 3px;
+  box-shadow:
+    0 1px 3px rgba(60, 40, 20, 0.18),
+    0 14px 34px -10px rgba(60, 40, 20, 0.35);
+}
+.night .pdf-viewport canvas {
+  box-shadow: 0 10px 30px -8px rgba(0, 0, 0, 0.9);
 }
 /* Frase que se está leyendo en voz alta */
 /* Frase que se está leyendo: raya naranja debajo, distinta del relleno de los subrayados */

@@ -142,15 +142,22 @@ async function synth(voice: string, text: string): Promise<ArrayBuffer> {
 async function diagnose(voice: string, text: string, log: (s: string) => void): Promise<ArrayBuffer> {
   const t0 = performance.now()
   const secs = (from = t0) => `${((performance.now() - from) / 1000).toFixed(1)} s`
+  log(`Núcleos: ${navigator.hardwareConcurrency ?? '?'} · SharedArrayBuffer: ${typeof SharedArrayBuffer !== 'undefined'}`)
+  log('Leyendo las voces guardadas…')
   log(`Voces guardadas: ${(await stored()).join(', ') || 'ninguna'}`)
-  log(`Memoria del aparato: ${(navigator as unknown as { deviceMemory?: number }).deviceMemory ?? '?'} GB · núcleos: ${navigator.hardwareConcurrency ?? '?'}`)
+  log('Comprobando el motor…')
   await ensureRuntime()
   log(`Motor descargado (${secs()})`)
   TtsSession._instance = null
   session = null
   log('Cargando el modelo de voz…')
   const t1 = performance.now()
-  session = await TtsSession.create({ voiceId: voice, wasmPaths: await runtimeUrls() })
+  session = await TtsSession.create({
+    voiceId: voice,
+    wasmPaths: await runtimeUrls(),
+    // Mensajes internos de la librería: dicen en qué paso exacto se queda
+    logger: (m: string) => log(`  · ${m}`),
+  } as Parameters<typeof TtsSession.create>[0])
   currentVoice = voice
   log(`Modelo cargado en ${secs(t1)}`)
   log('Generando una frase de prueba…')
@@ -175,7 +182,8 @@ self.onmessage = (e: MessageEvent) => {
   const reply = (data: object, transfer: Transferable[] = []) => self.postMessage({ id, ...data }, transfer)
   const task = async () => {
     try {
-      if (type === 'stored') reply({ result: await stored() })
+      if (type === 'ping') reply({ result: 'pong' })
+      else if (type === 'stored') reply({ result: await stored() })
       else if (type === 'remove') reply({ result: await remove(voice) })
       else if (type === 'download') {
         let last = 0

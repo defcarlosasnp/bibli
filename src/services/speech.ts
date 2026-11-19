@@ -5,6 +5,7 @@ import {
   NEURAL_VOICES,
   isNeuralVoice,
   prefetchNeural,
+  resetNeuralWorker,
   speakNeural,
   stopNeural,
   storedNeuralVoices,
@@ -335,7 +336,11 @@ export async function speakWithin(text: string, options: SpeakOptions): Promise<
       tooSlow,
     ])
     clearTimeout(timer)
-    if (!ok) stopSpeaking()
+    if (!ok) {
+      stopSpeaking()
+      // Si el hilo se quedó colgado generando, las siguientes frases esperarían detrás
+      resetNeuralWorker()
+    }
     return ok
   }
   // ~15 caracteres por segundo a velocidad 1; margen amplio para no cortar voces lentas

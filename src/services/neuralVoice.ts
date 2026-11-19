@@ -231,6 +231,12 @@ export async function speakNeural(text: string, voiceId: string, rate: number): 
   }
 }
 
+/** Cierra el hilo de la voz (p. ej. si una frase se quedó colgada) para que la siguiente empiece limpia. */
+export function resetNeuralWorker() {
+  cache.clear()
+  failAll('reiniciado')
+}
+
 /**
  * Prueba completa (cargar, generar y reproducir una frase) contando cada paso.
  * Llamar a unlockNeuralAudio() antes, dentro del toque, para que el iPhone deje sonar el resultado.
@@ -238,8 +244,17 @@ export async function speakNeural(text: string, voiceId: string, rate: number): 
 export async function diagnoseNeural(voiceId: string, log: (s: string) => void) {
   const text = 'Hola, soy la voz neuronal de Bibli. ¿Me oyes bien?'
   const key = neuralKey(voiceId)
+  // Hilo nuevo: si el anterior se quedó colgado con una frase, la prueba esperaría detrás para siempre
+  resetNeuralWorker()
   diagLog = log
   try {
+    log('Arrancando el hilo de la voz…')
+    const pong = await Promise.race([
+      call<string>({ type: 'ping' }),
+      new Promise<null>((r) => setTimeout(() => r(null), 8000)),
+    ])
+    if (!pong) throw new Error('El hilo de la voz no arranca en este navegador')
+    log('Hilo arrancado')
     const buf = await call<ArrayBuffer>({ type: 'diagnose', voice: key, text }, undefined, log)
     cache.set(`${key}\n${text}`, Promise.resolve(new Blob([buf], { type: 'audio/wav' })))
     log('Reproduciendo…')

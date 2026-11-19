@@ -45,7 +45,25 @@ const loading = ref(true)
 const viewport = ref<HTMLDivElement>()
 const canvas = ref<HTMLCanvasElement>()
 const drawer = ref(false)
-const night = ref(localStorage.getItem('bibli.night') === null ? $q.dark.isActive : localStorage.getItem('bibli.night') === '1')
+/** Temas de lectura: color del papel y de la letra. */
+type ReaderTheme = 'day' | 'sepia' | 'dusk' | 'night'
+const READER_THEMES: { id: ReaderTheme; label: string; bg: string; ink: string; dark: boolean }[] = [
+  { id: 'day', label: 'Papel', bg: '#fdf9f2', ink: '#2b2018', dark: false },
+  { id: 'sepia', label: 'Sepia', bg: '#f1e3c6', ink: '#4a3524', dark: false },
+  { id: 'dusk', label: 'Gris', bg: '#2d2c30', ink: '#dcd6cc', dark: true },
+  { id: 'night', label: 'Noche', bg: '#0f0e0d', ink: '#cfc5b8', dark: true },
+]
+function initialTheme(): ReaderTheme {
+  const saved = localStorage.getItem('bibli.readerTheme') as ReaderTheme | null
+  if (saved && READER_THEMES.some((t) => t.id === saved)) return saved
+  // Antes solo había día/noche
+  const legacy = localStorage.getItem('bibli.night')
+  return (legacy === null ? $q.dark.isActive : legacy === '1') ? 'night' : 'day'
+}
+const theme = ref<ReaderTheme>(initialTheme())
+const themeInfo = computed(() => READER_THEMES.find((t) => t.id === theme.value)!)
+/** Tema oscuro (Gris o Noche): colores de subrayado, lectura en voz alta, etc. */
+const night = computed(() => themeInfo.value.dark)
 
 /** Página (PDF) o CFI (EPUB) que se está mostrando. */
 const currentPosition = ref<string | null>(null)
@@ -317,12 +335,11 @@ function askPdfPage() {
 
 // ---------- EPUB ----------
 
-const epubThemes = {
-  day: { body: { color: '#2b2018 !important', background: '#fdf9f2 !important' } },
-  night: {
-    body: { color: '#ddd !important', background: '#121212 !important' },
-    a: { color: '#ffb300 !important' },
-  },
+function epubTheme(t: (typeof READER_THEMES)[number]) {
+  return {
+    body: { color: `${t.ink} !important`, background: `${t.bg} !important` },
+    ...(t.dark ? { a: { color: '#ffb300 !important' } } : {}),
+  }
 }
 
 /**
@@ -352,9 +369,8 @@ async function initEpub(data: ArrayBuffer, meta: Book) {
     spread: 'auto',
     allowScriptedContent: appleWebKit,
   })
-  rendition.value.themes.register('day', epubThemes.day)
-  rendition.value.themes.register('night', epubThemes.night)
-  rendition.value.themes.select(night.value ? 'night' : 'day')
+  for (const t of READER_THEMES) rendition.value.themes.register(t.id, epubTheme(t))
+  rendition.value.themes.select(theme.value)
 
   // Mientras epub.js genera las ubicaciones, percentageFromCfi devuelve 0 (no null): hasta que
   // terminen no hay porcentaje fiable, y guardarlo machacaría el progreso real del libro.
@@ -1223,9 +1239,13 @@ function goTo(position: string) {
 // ---------- Común ----------
 
 function toggleNight() {
-  night.value = !night.value
-  localStorage.setItem('bibli.night', night.value ? '1' : '0')
-  rendition.value?.themes.select(night.value ? 'night' : 'day')
+  setTheme(night.value ? 'day' : 'night')
+}
+
+function setTheme(id: ReaderTheme) {
+  theme.value = id
+  localStorage.setItem('bibli.readerTheme', id)
+  rendition.value?.themes.select(id)
 }
 
 function next() {
@@ -1258,6 +1278,7 @@ function onKey(e: KeyboardEvent) {
   } else if (e.key === 'ArrowRight' || e.key === 'PageDown') next()
   else if (e.key === 'ArrowLeft' || e.key === 'PageUp') prev()
   else if (e.key === 'b') toggleBookmark()
+  else if (e.key === 'n') toggleNight()
   else if (e.key === 'f' && (e.ctrlKey || e.metaKey)) {
     e.preventDefault()
     openSearch()
@@ -1322,14 +1343,21 @@ function onSwipe({ direction }: { direction?: string }) {
                 <q-btn flat round icon="text_decrease" aria-label="Letra más pequeña" @click="setFontSize(-10)" />
                 <q-btn flat round icon="text_increase" aria-label="Letra más grande" @click="setFontSize(10)" />
               </template>
-              <q-separator vertical />
-              <q-btn
-                flat
-                round
-                :icon="night ? 'light_mode' : 'dark_mode'"
-                :aria-label="night ? 'Modo día' : 'Modo nocturno'"
-                @click="toggleNight"
-              />
+            </div>
+            <q-separator />
+            <div class="theme-row q-pa-sm">
+              <button
+                v-for="t in READER_THEMES"
+                :key="t.id"
+                class="theme-swatch"
+                :class="{ 'theme-swatch--on': theme === t.id }"
+                :style="{ background: t.bg, color: t.ink }"
+                :aria-label="`Tema ${t.label}`"
+                @click="setTheme(t.id)"
+              >
+                <span class="theme-swatch__aa">Aa</span>
+                <span class="theme-swatch__label">{{ t.label }}</span>
+              </button>
             </div>
           </q-menu>
         </q-btn>
@@ -1346,8 +1374,24 @@ function onSwipe({ direction }: { direction?: string }) {
         <q-btn flat round :dense="compactBar" icon="search" aria-label="Buscar en el libro" @click="openSearch">
           <q-tooltip>Buscar en el libro (Ctrl+F)</q-tooltip>
         </q-btn>
-        <q-btn v-if="!compactBar" flat round :icon="night ? 'light_mode' : 'dark_mode'" @click="toggleNight">
-          <q-tooltip>{{ night ? 'Modo día' : 'Modo nocturno' }}</q-tooltip>
+        <q-btn v-if="!compactBar" flat round icon="palette" aria-label="Tema de lectura">
+          <q-tooltip>Tema de lectura (N cambia día/noche)</q-tooltip>
+          <q-menu anchor="bottom middle" self="top middle">
+            <div class="theme-row q-pa-sm">
+              <button
+                v-for="t in READER_THEMES"
+                :key="t.id"
+                class="theme-swatch"
+                :class="{ 'theme-swatch--on': theme === t.id }"
+                :style="{ background: t.bg, color: t.ink }"
+                :aria-label="`Tema ${t.label}`"
+                @click="setTheme(t.id)"
+              >
+                <span class="theme-swatch__aa">Aa</span>
+                <span class="theme-swatch__label">{{ t.label }}</span>
+              </button>
+            </div>
+          </q-menu>
         </q-btn>
         <q-btn
           flat
@@ -1498,7 +1542,12 @@ function onSwipe({ direction }: { direction?: string }) {
     </q-footer>
 
     <q-page-container>
-      <q-page class="reader-page" :class="{ night }" :style-fn="pageStyle">
+      <q-page
+        class="reader-page"
+        :class="[{ night }, `theme-${theme}`]"
+        :style="{ '--reader-bg': themeInfo.bg }"
+        :style-fn="pageStyle"
+      >
         <q-inner-loading :showing="loading" />
         <div
           v-if="!loading"
@@ -1629,7 +1678,8 @@ function onSwipe({ direction }: { direction?: string }) {
 .reader-page {
   display: flex;
   position: relative;
-  background: #fdf9f2;
+  background: var(--reader-bg, #fdf9f2);
+  transition: background 0.3s;
 }
 .reader-slider {
   flex: 1;
@@ -1708,9 +1758,6 @@ function onSwipe({ direction }: { direction?: string }) {
   opacity: 0;
   translate: 0 120px;
 }
-.reader-page.night {
-  background: #121212;
-}
 .viewport {
   flex: 1;
   min-width: 0;
@@ -1726,7 +1773,13 @@ function onSwipe({ direction }: { direction?: string }) {
   /* Mesa de madera clara alrededor de la hoja, a juego con la app */
   background: radial-gradient(ellipse at center, #efe5d6 0%, #e2d3bf 100%);
 }
-.night .pdf-viewport {
+.theme-sepia .pdf-viewport {
+  background: radial-gradient(ellipse at center, #e6d3ad 0%, #d6bf95 100%);
+}
+.theme-dusk .pdf-viewport {
+  background: #1f1e22;
+}
+.theme-night .pdf-viewport {
   background: #0d0b0a;
 }
 .pdf-page {
@@ -1905,7 +1958,45 @@ function onSwipe({ direction }: { direction?: string }) {
   transform: translateY(20px);
 }
 /* Invierte la página y rota el tono para que las imágenes conserven colores aproximados. */
-.night .pdf-viewport canvas {
+.theme-night .pdf-viewport canvas {
   filter: invert(0.9) hue-rotate(180deg);
+}
+.theme-dusk .pdf-viewport canvas {
+  filter: invert(0.82) hue-rotate(180deg) brightness(1.05);
+}
+/* Sepia: tiñe el blanco del papel sin estropear las ilustraciones */
+.theme-sepia .pdf-viewport canvas {
+  filter: sepia(0.35) saturate(1.15) brightness(0.97);
+}
+/* Selector de tema (menú de la cabecera) */
+.theme-row {
+  display: flex;
+  gap: 8px;
+}
+.theme-swatch {
+  width: 64px;
+  height: 64px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  border-radius: 14px;
+  border: 2px solid rgba(0, 0, 0, 0.12);
+  cursor: pointer;
+  font-family: var(--font-body);
+}
+.theme-swatch--on {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent);
+}
+.theme-swatch__aa {
+  font-family: var(--font-display);
+  font-size: 1.25rem;
+  font-weight: 700;
+  line-height: 1;
+}
+.theme-swatch__label {
+  font-size: 0.72rem;
 }
 </style>

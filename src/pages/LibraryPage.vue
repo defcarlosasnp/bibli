@@ -10,7 +10,9 @@ import BookEditDialog from '@/components/BookEditDialog.vue'
 import ReadingBuddy from '@/components/ReadingBuddy.vue'
 import ContinueReading from '@/components/ContinueReading.vue'
 import LumiOwl from '@/components/LumiOwl.vue'
-import { useLibraryStore, type SortKey } from '@/stores/library'
+import ShelvesDialog from '@/components/ShelvesDialog.vue'
+import BackupDialog from '@/components/BackupDialog.vue'
+import { bookStatus, useLibraryStore, type SortKey, type StatusFilter } from '@/stores/library'
 import { FINISHED_THRESHOLD, celebrate, dailyGoalMinutes, dayKey, formatDuration, greeting, streakFrom } from '@/services/stats'
 import { checkAchievements, setAchievementAnnouncer } from '@/services/achievements'
 import { outfitFor } from '@/services/lumi'
@@ -19,7 +21,7 @@ import { db, type Book, type ReadingDay } from '@/db'
 const $q = useQuasar()
 const router = useRouter()
 const library = useLibraryStore()
-const { visibleBooks, books, loaded, search, sortKey, formatFilter, tagFilter, viewMode, allTags } =
+const { visibleBooks, books, loaded, search, sortKey, formatFilter, tagFilter, statusFilter, viewMode, allTags } =
   storeToRefs(library)
 
 const fileInput = ref<HTMLInputElement>()
@@ -134,6 +136,48 @@ function editBook(book: Book) {
   }).onOk((changes: Pick<Book, 'title' | 'author' | 'tags'>) => library.updateBook(book.id, changes))
 }
 
+function openBackup() {
+  $q.dialog({ component: BackupDialog })
+}
+
+function editShelves(book: Book) {
+  $q.dialog({
+    component: ShelvesDialog,
+    componentProps: { book, allTags: allTags.value },
+  }).onOk((tags: string[]) => library.updateBook(book.id, { tags }))
+}
+
+const statusShelves = computed(() => {
+  const count = (s: StatusFilter) => books.value.filter((b) => bookStatus(b) === s).length
+  return [
+    { id: 'reading' as const, icon: '📖', label: 'Leyendo', count: count('reading') },
+    { id: 'unread' as const, icon: '🕐', label: 'Por empezar', count: count('unread') },
+    { id: 'finished' as const, icon: '🏆', label: 'Terminados', count: count('finished') },
+  ]
+})
+const shelfCounts = computed(() => {
+  const counts: Record<string, number> = {}
+  for (const b of books.value) for (const t of b.tags) counts[t] = (counts[t] ?? 0) + 1
+  return counts
+})
+
+function renameShelf(name: string) {
+  $q.dialog({
+    title: 'Renombrar estantería',
+    prompt: { model: name, type: 'text', isValid: (v: string) => !!v.trim() },
+    cancel: true,
+  }).onOk((to: string) => library.renameShelf(name, to))
+}
+
+function deleteShelf(name: string) {
+  $q.dialog({
+    title: 'Quitar estantería',
+    message: `¿Quitar la estantería «${name}»? Los libros siguen en tu biblioteca.`,
+    cancel: { flat: true, label: 'Cancelar' },
+    ok: { label: 'Quitar', color: 'negative', unelevated: true },
+  }).onOk(() => library.deleteShelf(name))
+}
+
 function removeBook(book: Book) {
   $q.dialog({
     title: 'Eliminar libro',
@@ -186,6 +230,9 @@ function removeBook(book: Book) {
               </q-item>
             </q-list>
           </q-menu>
+        </q-btn>
+        <q-btn flat round icon="cloud_sync" aria-label="Copia de seguridad" @click="openBackup">
+          <q-tooltip>Copia de seguridad</q-tooltip>
         </q-btn>
         <q-btn
           v-if="$q.screen.gt.xs"
@@ -322,7 +369,21 @@ function removeBook(book: Book) {
             />
           </div>
 
-          <div v-if="allTags.length" class="tag-bar q-mb-md">
+          <!-- Estanterías: las automáticas (según lo leído) y las del usuario -->
+          <div v-if="books.length" class="tag-bar q-mb-md">
+            <q-chip
+              v-for="s in statusShelves"
+              :key="s.id"
+              clickable
+              :outline="statusFilter !== s.id"
+              :color="statusFilter === s.id ? 'accent' : 'primary'"
+              :text-color="statusFilter === s.id ? 'white' : 'primary'"
+              @click="statusFilter = statusFilter === s.id ? null : s.id"
+            >
+              {{ s.icon }}&nbsp;{{ s.label }}
+              <span class="shelf-count">{{ s.count }}</span>
+            </q-chip>
+            <q-separator v-if="allTags.length" vertical inset class="q-mx-xs" />
             <q-chip
               v-for="tag in allTags"
               :key="tag"
@@ -330,10 +391,26 @@ function removeBook(book: Book) {
               :outline="tagFilter !== tag"
               :color="tagFilter === tag ? 'accent' : 'primary'"
               :text-color="tagFilter === tag ? 'white' : 'primary'"
-              icon="label"
+              icon="collections_bookmark"
               @click="tagFilter = tagFilter === tag ? null : tag"
             >
               {{ tag }}
+              <span class="shelf-count">{{ shelfCounts[tag] }}</span>
+              <q-menu context-menu touch-position auto-close>
+                <q-list dense style="min-width: 170px">
+                  <q-item clickable @click="renameShelf(tag)">
+                    <q-item-section avatar><q-icon name="edit" /></q-item-section>
+                    <q-item-section>Renombrar</q-item-section>
+                  </q-item>
+                  <q-item clickable @click="deleteShelf(tag)">
+                    <q-item-section avatar><q-icon name="delete" color="negative" /></q-item-section>
+                    <q-item-section>Quitar estantería</q-item-section>
+                  </q-item>
+                </q-list>
+              </q-menu>
+            </q-chip>
+            <q-chip v-if="!allTags.length" outline color="grey-7" icon="info" class="shelf-hint">
+              Crea tus estanterías desde el menú ⋮ de cada libro
             </q-chip>
           </div>
 
@@ -370,6 +447,7 @@ function removeBook(book: Book) {
               class="shelf__item"
               @open="openBook(book)"
               @edit="editBook(book)"
+              @shelves="editShelves(book)"
               @remove="removeBook(book)"
             />
           </TransitionGroup>
@@ -381,6 +459,7 @@ function removeBook(book: Book) {
               :book="book"
               @open="openBook(book)"
               @edit="editBook(book)"
+              @shelves="editShelves(book)"
               @remove="removeBook(book)"
             />
           </q-list>
@@ -601,8 +680,21 @@ function removeBook(book: Book) {
 .tag-bar {
   display: flex;
   flex-wrap: nowrap;
+  align-items: center;
   overflow-x: auto;
   scrollbar-width: none;
+}
+.tag-bar .q-chip {
+  flex-shrink: 0;
+}
+.shelf-count {
+  margin-left: 6px;
+  font-size: 0.75em;
+  opacity: 0.7;
+  font-variant-numeric: tabular-nums;
+}
+.shelf-hint {
+  font-size: 0.8rem;
 }
 
 /* ---------- Estantería ---------- */

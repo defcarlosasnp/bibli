@@ -2,7 +2,7 @@
 import type { Book } from '@/db'
 
 defineProps<{ book: Book }>()
-const emit = defineEmits<{ open: []; edit: []; remove: [] }>()
+const emit = defineEmits<{ open: []; edit: []; shelves: []; remove: [] }>()
 </script>
 
 <template>
@@ -26,10 +26,14 @@ const emit = defineEmits<{ open: []; edit: []; remove: [] }>()
       <span v-if="book.progress > 0" class="text-caption">{{ Math.round(book.progress * 100) }}%</span>
       <q-btn round dense flat icon="more_vert" @click.stop>
         <q-menu auto-close>
-          <q-list dense style="min-width: 140px">
+          <q-list dense style="min-width: 160px">
             <q-item clickable @click="emit('edit')">
               <q-item-section avatar><q-icon name="edit" /></q-item-section>
               <q-item-section>Editar</q-item-section>
+            </q-item>
+            <q-item clickable @click="emit('shelves')">
+              <q-item-section avatar><q-icon name="collections_bookmark" /></q-item-section>
+              <q-item-section>Estanterías</q-item-section>
             </q-item>
             <q-item clickable @click="emit('remove')">
               <q-item-section avatar><q-icon name="delete" color="negative" /></q-item-section>

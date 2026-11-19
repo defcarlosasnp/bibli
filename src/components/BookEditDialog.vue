@@ -38,7 +38,7 @@ function save() {
         <q-input v-model="author" label="Autor" outlined />
         <q-select
           v-model="tags"
-          label="Colecciones"
+          label="Estanterías"
           hint="Escribe y pulsa Enter para crear una nueva"
           outlined
           multiple

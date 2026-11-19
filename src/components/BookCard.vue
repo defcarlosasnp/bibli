@@ -4,7 +4,7 @@ import type { Book } from '@/db'
 import { FINISHED_THRESHOLD } from '@/services/stats'
 
 const props = defineProps<{ book: Book }>()
-const emit = defineEmits<{ open: []; edit: []; remove: [] }>()
+const emit = defineEmits<{ open: []; edit: []; shelves: []; remove: [] }>()
 
 // Color estable por título para las portadas generadas.
 const placeholderHue = computed(() => {
@@ -39,10 +39,14 @@ const isNew = computed(() => !props.book.lastOpenedAt && Date.now() - props.book
         </q-badge>
         <q-btn class="menu" round dense flat size="sm" icon="more_vert" color="white" @click.stop>
           <q-menu auto-close>
-            <q-list dense style="min-width: 140px">
+            <q-list dense style="min-width: 160px">
               <q-item clickable @click="emit('edit')">
                 <q-item-section avatar><q-icon name="edit" /></q-item-section>
                 <q-item-section>Editar</q-item-section>
+              </q-item>
+              <q-item clickable @click="emit('shelves')">
+                <q-item-section avatar><q-icon name="collections_bookmark" /></q-item-section>
+                <q-item-section>Estanterías</q-item-section>
               </q-item>
               <q-item clickable @click="emit('remove')">
                 <q-item-section avatar><q-icon name="delete" color="negative" /></q-item-section>

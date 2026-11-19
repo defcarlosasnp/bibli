@@ -4,9 +4,16 @@ import { liveQuery } from 'dexie'
 import { db, type Book } from '@/db'
 import { detectFormat, extractMetadata, sha256 } from '@/services/metadata'
 import { epubToUtf8 } from '@/services/epubEncoding'
+import { FINISHED_THRESHOLD } from '@/services/stats'
 
 export type SortKey = 'title' | 'author' | 'addedAt' | 'lastOpenedAt'
 export type ViewMode = 'grid' | 'list'
+export type StatusFilter = 'reading' | 'unread' | 'finished'
+
+export function bookStatus(b: Book): StatusFilter {
+  if (b.progress >= FINISHED_THRESHOLD) return 'finished'
+  return b.progress > 0 ? 'reading' : 'unread'
+}
 
 export interface ImportResult {
   added: number
@@ -23,6 +30,8 @@ export const useLibraryStore = defineStore('library', () => {
   const sortKey = ref<SortKey>((localStorage.getItem('bibli.sort') as SortKey) || 'title')
   const formatFilter = ref<'all' | 'pdf' | 'epub'>('all')
   const tagFilter = ref<string | null>(null)
+  /** Estanterías automáticas según lo leído. */
+  const statusFilter = ref<StatusFilter | null>(null)
   const viewMode = ref<ViewMode>((localStorage.getItem('bibli.view') as ViewMode) || 'grid')
 
   const allTags = computed(() =>
@@ -43,6 +52,7 @@ export const useLibraryStore = defineStore('library', () => {
       (b) =>
         (formatFilter.value === 'all' || b.format === formatFilter.value) &&
         (!tagFilter.value || b.tags.includes(tagFilter.value)) &&
+        (!statusFilter.value || bookStatus(b) === statusFilter.value) &&
         (!q || b.title.toLocaleLowerCase('es').includes(q) || b.author.toLocaleLowerCase('es').includes(q)),
     )
     const key = sortKey.value
@@ -115,6 +125,30 @@ export const useLibraryStore = defineStore('library', () => {
     if (tagFilter.value && !allTags.value.includes(tagFilter.value)) tagFilter.value = null
   }
 
+  /** Cambia el nombre de una estantería en todos sus libros (si ya existe otra igual, se juntan). */
+  async function renameShelf(from: string, to: string) {
+    to = to.trim()
+    if (!to || to === from) return
+    await db.books
+      .where('tags')
+      .equals(from)
+      .modify((b: Book) => {
+        b.tags = [...new Set(b.tags.map((t) => (t === from ? to : t)))]
+      })
+    if (tagFilter.value === from) tagFilter.value = to
+  }
+
+  /** Quita la estantería; los libros siguen en la biblioteca. */
+  async function deleteShelf(name: string) {
+    await db.books
+      .where('tags')
+      .equals(name)
+      .modify((b: Book) => {
+        b.tags = b.tags.filter((t) => t !== name)
+      })
+    if (tagFilter.value === name) tagFilter.value = null
+  }
+
   async function removeBook(id: number) {
     await db.transaction('rw', db.books, db.files, db.highlights, async () => {
       await db.books.delete(id)
@@ -130,6 +164,7 @@ export const useLibraryStore = defineStore('library', () => {
     sortKey,
     formatFilter,
     tagFilter,
+    statusFilter,
     viewMode,
     allTags,
     visibleBooks,
@@ -137,6 +172,8 @@ export const useLibraryStore = defineStore('library', () => {
     setViewMode,
     importFiles,
     updateBook,
+    renameShelf,
+    deleteShelf,
     removeBook,
   }
 })

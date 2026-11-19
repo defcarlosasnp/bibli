@@ -34,6 +34,8 @@ interface Standing {
   h: number
   /** El apellido solo se pone si cabe sin cortar el título. */
   showAuthor: boolean
+  /** Diseño del lomo: filetes dorados, etiqueta, nervios de cuero o franja superior. */
+  variant: number
 }
 interface Stack {
   type: 'stack'
@@ -74,7 +76,7 @@ const items = computed<(Standing | Stack)[]>(() => {
       // Los títulos largos, en libros algo más gruesos (como en la vida real)
       const w = 29 + (s % 13) + Math.min(10, Math.round(b.title.length / 4))
       const h = 172 + ((s >> 4) % 42)
-      out.push({ type: 'standing', key: `b-${b.id}`, book: b, w, h, showAuthor: fitsAuthor(b, h) })
+      out.push({ type: 'standing', key: `b-${b.id}`, book: b, w, h, showAuthor: fitsAuthor(b, h), variant: (s >> 11) % 4 })
     }
   }
   return out
@@ -102,58 +104,68 @@ useSortableBooks(caseEl, '.slot--standing', (ids) => emit('reorder', ids))
 </script>
 
 <template>
-  <div ref="caseEl" class="bookcase">
-    <template v-for="item in items" :key="item.key">
-      <div v-if="item.type === 'standing'" class="slot slot--standing" :data-id="item.book.id">
-        <button
-          class="spine"
-          :class="{ 'spine--done': finished(item.book) }"
-          :style="{
-            '--w': `${item.w}px`,
-            '--h': `${item.h}px`,
-            '--c': colors[item.book.id]?.bg,
-            '--fg': colors[item.book.id]?.fg,
-          }"
-          :aria-label="item.book.title"
-        >
-          <span class="spine__title font-display">{{ item.book.title }}</span>
-          <span v-if="item.showAuthor" class="spine__author">{{ surname(item.book.author) }}</span>
-          <span v-if="reading(item.book)" class="spine__ribbon" />
-          <BookPeekMenu
-            :book="item.book"
-            @open="emit('open', item.book)"
-            @edit="emit('edit', item.book)"
-            @shelves="emit('shelves', item.book)"
-            @remove="emit('remove', item.book)"
-          />
-        </button>
+  <!-- El mueble mide lo que ocupan los libros (más un hueco para el siguiente) y crece al añadir más -->
+  <div class="bookcase">
+    <div class="cornice" aria-hidden="true" />
+    <div ref="caseEl" class="shelves">
+      <template v-for="item in items" :key="item.key">
+        <div v-if="item.type === 'standing'" class="slot slot--standing" :data-id="item.book.id">
+          <button
+            class="spine"
+            :class="[`spine--v${item.variant}`, { 'spine--done': finished(item.book) }]"
+            :style="{
+              '--w': `${item.w}px`,
+              '--h': `${item.h}px`,
+              '--c': colors[item.book.id]?.bg,
+              '--fg': colors[item.book.id]?.fg,
+            }"
+            :aria-label="item.book.title"
+          >
+            <span class="spine__title font-display">{{ item.book.title }}</span>
+            <span v-if="item.showAuthor" class="spine__author">{{ surname(item.book.author) }}</span>
+            <span v-if="reading(item.book)" class="spine__ribbon" />
+            <BookPeekMenu
+              :book="item.book"
+              @open="emit('open', item.book)"
+              @edit="emit('edit', item.book)"
+              @shelves="emit('shelves', item.book)"
+              @remove="emit('remove', item.book)"
+            />
+          </button>
+        </div>
+        <div v-else class="slot slot--stack">
+          <button
+            v-for="entry in item.books"
+            :key="entry.book.id"
+            class="lying"
+            :data-id="entry.book.id"
+            :style="{
+              '--len': `${entry.len}px`,
+              '--thick': `${entry.thick}px`,
+              '--shift': `${entry.shift}px`,
+              '--c': colors[entry.book.id]?.bg,
+              '--fg': colors[entry.book.id]?.fg,
+            }"
+            :aria-label="entry.book.title"
+          >
+            <span class="lying__title font-display">{{ entry.book.title }}</span>
+            <BookPeekMenu
+              :book="entry.book"
+              @open="emit('open', entry.book)"
+              @edit="emit('edit', entry.book)"
+              @shelves="emit('shelves', entry.book)"
+              @remove="emit('remove', entry.book)"
+            />
+          </button>
+        </div>
+      </template>
+      <!-- Sujetalibros y una planta al final (no se pueden arrastrar) -->
+      <div class="slot slot--deco" aria-hidden="true">
+        <span class="bookend" />
+        <span class="plant">🪴</span>
       </div>
-      <div v-else class="slot slot--stack">
-        <button
-          v-for="entry in item.books"
-          :key="entry.book.id"
-          class="lying"
-          :data-id="entry.book.id"
-          :style="{
-            '--len': `${entry.len}px`,
-            '--thick': `${entry.thick}px`,
-            '--shift': `${entry.shift}px`,
-            '--c': colors[entry.book.id]?.bg,
-            '--fg': colors[entry.book.id]?.fg,
-          }"
-          :aria-label="entry.book.title"
-        >
-          <span class="lying__title font-display">{{ entry.book.title }}</span>
-          <BookPeekMenu
-            :book="entry.book"
-            @open="emit('open', entry.book)"
-            @edit="emit('edit', entry.book)"
-            @shelves="emit('shelves', entry.book)"
-            @remove="emit('remove', entry.book)"
-          />
-        </button>
-      </div>
-    </template>
+    </div>
+    <div class="plinth" aria-hidden="true"><span class="foot" /><span class="foot" /></div>
   </div>
 </template>
 
@@ -162,19 +174,48 @@ useSortableBooks(caseEl, '.slot--standing', (ids) => emit('reorder', ids))
   /* Alto de cada balda y grosor de la tabla; --s escala los libros en pantallas pequeñas */
   --row: 252px;
   --plank: 18px;
+  --side: 16px;
   --s: 1;
-  --wood-hi: #c48a5a;
-  --wood: #9a6438;
-  --wood-lo: #6b4123;
-  --back: #3a2416;
+  --wood-hi: #c99263;
+  --wood: #9c663a;
+  --wood-lo: #6a3f21;
+  --back: #3b2517;
+  /* Veta de la madera: rayas finas irregulares */
+  --grain: repeating-linear-gradient(
+    92deg,
+    rgba(0, 0, 0, 0.06) 0 2px,
+    transparent 2px 7px,
+    rgba(255, 255, 255, 0.04) 7px 8px,
+    transparent 8px 15px,
+    rgba(0, 0, 0, 0.04) 15px 18px,
+    transparent 18px 29px
+  );
+  /* Tan ancho como los libros (hasta llenar la pantalla y pasar a otra balda), centrado */
+  width: fit-content;
+  max-width: 100%;
+  min-width: min(100%, 300px);
+  margin: 6px auto 0;
+  filter: drop-shadow(0 22px 22px rgba(30, 14, 4, 0.45));
+}
+.cornice {
+  position: relative;
+  height: 24px;
+  margin: 0 -10px;
+  border-radius: 6px 6px 2px 2px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.22), transparent 30%, transparent 62%, rgba(0, 0, 0, 0.35) 62%, rgba(0, 0, 0, 0.15) 70%, transparent 71%),
+    var(--grain),
+    linear-gradient(180deg, var(--wood-hi), var(--wood) 55%, var(--wood-lo));
+  box-shadow: 0 4px 6px -2px rgba(0, 0, 0, 0.5);
+  z-index: 1;
+}
+.shelves {
+  position: relative;
   display: flex;
   flex-wrap: wrap;
   align-items: flex-end;
-  padding: 0 16px;
-  border: 12px solid var(--wood);
-  border-top-width: 14px;
-  border-bottom: 0;
-  border-radius: 10px 10px 4px 4px;
+  /* Hueco al final para que quepa el siguiente libro */
+  padding: 0 calc(var(--side) + 14px) 0 calc(var(--side) + 12px);
   background:
     /* Tabla de cada balda: borde claro arriba, canto oscuro abajo */
     linear-gradient(
@@ -188,31 +229,63 @@ useSortableBooks(caseEl, '.slot--standing', (ids) => emit('reorder', ids))
       )
       0 0 / 100% var(--row) repeat-y,
     /* Sombra que cada balda proyecta sobre el fondo de la de abajo */
-    linear-gradient(to bottom, rgba(0, 0, 0, 0.45), transparent 22px) 0 0 / 100% var(--row) repeat-y,
-    /* Fondo del mueble, con algo de veta */
-    repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.025) 0 2px, transparent 2px 23px),
-    linear-gradient(180deg, color-mix(in srgb, var(--back) 85%, #000), var(--back));
-  box-shadow:
-    inset 0 10px 18px -8px rgba(0, 0, 0, 0.6),
-    0 18px 30px -18px rgba(40, 20, 5, 0.7);
-  /* El borde de madera con algo de brillo */
-  border-image: linear-gradient(180deg, var(--wood-hi), var(--wood) 30%, var(--wood-lo)) 14;
+    linear-gradient(to bottom, rgba(0, 0, 0, 0.5), transparent 26px) 0 0 / 100% var(--row) repeat-y,
+    /* Laterales del mueble */
+    linear-gradient(90deg, var(--wood-lo), var(--wood) 30%, var(--wood-hi) 70%, var(--wood-lo)) left / var(--side) 100% no-repeat,
+    linear-gradient(90deg, var(--wood-lo), var(--wood-hi) 30%, var(--wood) 70%, var(--wood-lo)) right / var(--side) 100% no-repeat,
+    /* Fondo: tablas verticales con algo de veta */
+    repeating-linear-gradient(90deg, rgba(0, 0, 0, 0.28) 0 1px, transparent 1px 64px),
+    var(--grain),
+    linear-gradient(180deg, color-mix(in srgb, var(--back) 80%, #000), var(--back) 40%, color-mix(in srgb, var(--back) 88%, #000));
 }
-.body--light .bookcase {
-  --back: #5a3a24;
+/* Profundidad: sombra dentro del mueble junto a los laterales y luz cálida desde arriba */
+.shelves::before {
+  content: '';
+  position: absolute;
+  inset: 0 var(--side);
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse 60% 120px at 50% 0, rgba(255, 196, 120, 0.16), transparent 70%),
+    linear-gradient(90deg, rgba(0, 0, 0, 0.45), transparent 22px, transparent calc(100% - 22px), rgba(0, 0, 0, 0.45));
+}
+.plinth {
+  position: relative;
+  height: 26px;
+  margin: 0 -6px;
+  border-radius: 2px 2px 4px 4px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.18), transparent 25%, transparent 75%, rgba(0, 0, 0, 0.3)),
+    var(--grain),
+    linear-gradient(180deg, var(--wood), var(--wood-lo));
+}
+.foot {
+  position: absolute;
+  bottom: -9px;
+  width: 26px;
+  height: 10px;
+  border-radius: 0 0 5px 5px;
+  background: linear-gradient(180deg, var(--wood-lo), #3e2412);
+}
+.foot:first-child {
+  left: 14px;
+}
+.foot:last-child {
+  right: 14px;
 }
 @media (max-width: 599px) {
   .bookcase {
     --row: 214px;
     --plank: 15px;
+    --side: 10px;
     --s: 0.82;
-    padding: 0 8px;
-    border-width: 8px;
-    border-top-width: 10px;
+  }
+  .shelves {
+    padding: 0 calc(var(--side) + 6px);
   }
 }
 
 .slot {
+  position: relative;
   height: var(--row);
   padding-bottom: var(--plank);
   display: flex;
@@ -226,6 +299,43 @@ useSortableBooks(caseEl, '.slot--standing', (ids) => emit('reorder', ids))
   justify-content: flex-end;
   align-items: center;
   margin: 0 6px 0 4px;
+}
+
+/* ---------- Decoración ---------- */
+.slot--deco {
+  gap: 10px;
+  margin-left: 2px;
+  pointer-events: none;
+  /* Solo ocupa el hueco que sobre en la última balda: nunca abre una balda nueva para ella sola */
+  flex: 1 0 0;
+  min-width: 0;
+  overflow: hidden;
+  padding-left: 2px;
+}
+.bookend {
+  flex-shrink: 0;
+  width: calc(14px * var(--s));
+  height: calc(86px * var(--s));
+  border-radius: 3px 3px 0 0;
+  background: linear-gradient(90deg, #2b2b2e, #6d6d73 40%, #3a3a3e);
+  box-shadow: 2px 0 4px rgba(0, 0, 0, 0.5);
+  position: relative;
+}
+.bookend::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  right: calc(-22px * var(--s));
+  width: calc(24px * var(--s));
+  height: 4px;
+  background: #4a4a4f;
+}
+.plant {
+  flex-shrink: 0;
+  font-size: calc(54px * var(--s));
+  line-height: 1;
+  margin-bottom: -4px;
+  filter: drop-shadow(0 3px 3px rgba(0, 0, 0, 0.5));
 }
 
 /* ---------- Libro de pie ---------- */
@@ -258,7 +368,9 @@ useSortableBooks(caseEl, '.slot--standing', (ids) => emit('reorder', ids))
   position: absolute;
   inset: 0;
   border-radius: inherit;
-  background: linear-gradient(
+  background:
+    repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.035) 0 1px, transparent 1px 3px),
+    linear-gradient(
     90deg,
     rgba(0, 0, 0, 0.35),
     rgba(255, 255, 255, 0.16) 22%,
@@ -312,6 +424,60 @@ useSortableBooks(caseEl, '.slot--standing', (ids) => emit('reorder', ids))
   text-transform: uppercase;
   letter-spacing: 0.08em;
   opacity: 0.8;
+}
+/* ---------- Diseños de lomo ---------- */
+/* 1: el título en una etiqueta oscura con borde dorado */
+.spine--v1::after {
+  display: none;
+}
+.spine--v1 .spine__title {
+  padding: 8px 3px;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(232, 190, 110, 0.55);
+  border-radius: 2px;
+}
+/* 2: nervios de cuero (relieves horizontales arriba y abajo) */
+.spine--v2::after {
+  border: 0;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: linear-gradient(
+    to bottom,
+    transparent 7%,
+    rgba(0, 0, 0, 0.4) 7% 8.2%,
+    rgba(255, 255, 255, 0.2) 8.2% 9.4%,
+    transparent 9.4% 12%,
+    rgba(0, 0, 0, 0.4) 12% 13.2%,
+    rgba(255, 255, 255, 0.2) 13.2% 14.4%,
+    transparent 14.4% 85.6%,
+    rgba(0, 0, 0, 0.4) 85.6% 86.8%,
+    rgba(255, 255, 255, 0.2) 86.8% 88%,
+    transparent 88% 90.6%,
+    rgba(0, 0, 0, 0.4) 90.6% 91.8%,
+    rgba(255, 255, 255, 0.2) 91.8% 93%,
+    transparent 93%
+  );
+}
+.spine--v2 {
+  padding-top: calc(30px * var(--s));
+  padding-bottom: calc(24px * var(--s));
+}
+/* 3: franja oscura arriba con un filete dorado, como las colecciones de bolsillo */
+.spine--v3::after {
+  border: 0;
+  top: 0;
+  bottom: auto;
+  left: 0;
+  right: 0;
+  height: 17%;
+  background: rgba(0, 0, 0, 0.32);
+  border-bottom: 2px solid rgba(232, 190, 110, 0.6);
+  border-radius: 3px 3px 0 0;
+}
+.spine--v3 {
+  padding-top: calc(42px * var(--s));
 }
 /* Cinta de punto de lectura asomando por abajo: el libro que vas leyendo */
 .spine__ribbon {

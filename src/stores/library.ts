@@ -6,8 +6,9 @@ import { detectFormat, extractMetadata, sha256 } from '@/services/metadata'
 import { epubToUtf8 } from '@/services/epubEncoding'
 import { FINISHED_THRESHOLD } from '@/services/stats'
 
-export type SortKey = 'title' | 'author' | 'addedAt' | 'lastOpenedAt'
-export type ViewMode = 'grid' | 'list'
+export type SortKey = 'custom' | 'title' | 'author' | 'addedAt' | 'lastOpenedAt'
+/** spines: lomos en una estantería de madera · grid: portadas · list: lista */
+export type ViewMode = 'spines' | 'grid' | 'list'
 export type StatusFilter = 'reading' | 'unread' | 'finished'
 
 export function bookStatus(b: Book): StatusFilter {
@@ -32,7 +33,7 @@ export const useLibraryStore = defineStore('library', () => {
   const tagFilter = ref<string | null>(null)
   /** Estanterías automáticas según lo leído. */
   const statusFilter = ref<StatusFilter | null>(null)
-  const viewMode = ref<ViewMode>((localStorage.getItem('bibli.view') as ViewMode) || 'grid')
+  const viewMode = ref<ViewMode>((localStorage.getItem('bibli.view') as ViewMode) || 'spines')
 
   const allTags = computed(() =>
     [...new Set(books.value.flatMap((b) => b.tags))].sort((a, b) => collator.compare(a, b)),
@@ -55,9 +56,15 @@ export const useLibraryStore = defineStore('library', () => {
         (!statusFilter.value || bookStatus(b) === statusFilter.value) &&
         (!q || b.title.toLocaleLowerCase('es').includes(q) || b.author.toLocaleLowerCase('es').includes(q)),
     )
-    const key = sortKey.value
-    return filtered.sort((a, b) => {
+    return filtered.sort(compareBy(sortKey.value))
+  })
+
+  function compareBy(key: SortKey) {
+    return (a: Book, b: Book) => {
       switch (key) {
+        case 'custom':
+          // Los que nunca se movieron, después y por fecha de llegada
+          return (a.order ?? 1e9 + a.addedAt / 1e6) - (b.order ?? 1e9 + b.addedAt / 1e6)
         case 'title':
           return collator.compare(a.title, b.title)
         case 'author':
@@ -67,8 +74,25 @@ export const useLibraryStore = defineStore('library', () => {
         case 'lastOpenedAt':
           return (b.lastOpenedAt ?? 0) - (a.lastOpenedAt ?? 0)
       }
-    })
-  })
+    }
+  }
+
+  /**
+   * Nuevo orden de los libros visibles (ids tal como quedan tras arrastrar). Pasa a "Mi orden": los
+   * visibles se recolocan en los huecos que ocupaban en el orden completo, así un filtro no desordena el resto.
+   */
+  async function setVisibleOrder(ids: number[]) {
+    const byId = new Map(books.value.map((b) => [b.id, b]))
+    const visible = ids.map((id) => byId.get(id)).filter((b): b is Book => !!b)
+    const all = [...books.value].sort(compareBy(sortKey.value))
+    const slots = visible.map((b) => all.indexOf(b)).sort((x, y) => x - y)
+    slots.forEach((slot, i) => (all[slot] = visible[i]))
+    // Se cambia ya en memoria (para que no salte) y luego se guarda
+    all.forEach((b, i) => (b.order = i))
+    setSort('custom')
+    await db.transaction('rw', db.books, () => Promise.all(all.map((b, i) => db.books.update(b.id, { order: i }))))
+  }
+
 
   function setSort(key: SortKey) {
     sortKey.value = key
@@ -175,5 +199,6 @@ export const useLibraryStore = defineStore('library', () => {
     renameShelf,
     deleteShelf,
     removeBook,
+    setVisibleOrder,
   }
 })

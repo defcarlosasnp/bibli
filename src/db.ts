@@ -28,6 +28,8 @@ export interface Book {
   /** Colecciones / etiquetas a las que pertenece. */
   tags: string[]
   bookmarks: Bookmark[]
+  /** Posición en "Mi orden" (arrastrando los libros); sin valor, va por fecha de llegada. */
+  order?: number
 }
 
 /** El binario va en su propia tabla para no cargarlo al listar la biblioteca. */

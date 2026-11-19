@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, type ComponentPublicInstance } from 'vue'
 import { useRouter } from 'vue-router'
 import { useQuasar } from 'quasar'
 import { storeToRefs } from 'pinia'
@@ -11,6 +11,8 @@ import ReadingBuddy from '@/components/ReadingBuddy.vue'
 import ContinueReading from '@/components/ContinueReading.vue'
 import LumiOwl from '@/components/LumiOwl.vue'
 import ShelvesDialog from '@/components/ShelvesDialog.vue'
+import BookShelf from '@/components/BookShelf.vue'
+import { useSortableBooks } from '@/composables/useSortableBooks'
 import BackupDialog from '@/components/BackupDialog.vue'
 import { bookStatus, useLibraryStore, type SortKey, type StatusFilter } from '@/stores/library'
 import { FINISHED_THRESHOLD, celebrate, dailyGoalMinutes, dayKey, formatDuration, greeting, streakFrom } from '@/services/stats'
@@ -73,7 +75,14 @@ const stats = computed(() => {
   ]
 })
 
+// Arrastrar para ordenar en las vistas de portadas y de lista (la estantería lo hace por su cuenta)
+const gridEl = ref<ComponentPublicInstance | null>(null)
+const listEl = ref<ComponentPublicInstance | null>(null)
+useSortableBooks(gridEl, '.book-card', (ids) => library.setVisibleOrder(ids))
+useSortableBooks(listEl, '.q-item', (ids) => library.setVisibleOrder(ids))
+
 const sortOptions: { value: SortKey; label: string; icon: string }[] = [
+  { value: 'custom', label: 'Mi orden (arrastrando)', icon: 'drag_indicator' },
   { value: 'title', label: 'Título', icon: 'sort_by_alpha' },
   { value: 'author', label: 'Autor', icon: 'person' },
   { value: 'addedAt', label: 'Recién añadidos', icon: 'schedule' },
@@ -205,14 +214,6 @@ function removeBook(book: Book) {
         >
           <template #prepend><q-icon name="search" /></template>
         </q-input>
-        <q-btn
-          flat
-          round
-          :icon="viewMode === 'grid' ? 'view_list' : 'grid_view'"
-          @click="library.setViewMode(viewMode === 'grid' ? 'list' : 'grid')"
-        >
-          <q-tooltip>{{ viewMode === 'grid' ? 'Ver como lista' : 'Ver como estantería' }}</q-tooltip>
-        </q-btn>
         <q-btn flat round icon="sort">
           <q-tooltip>Ordenar</q-tooltip>
           <q-menu auto-close>
@@ -344,12 +345,40 @@ function removeBook(book: Book) {
 
         <!-- Estantería -->
         <section class="section">
-          <div class="row items-center q-mb-sm">
+          <div class="row items-center q-mb-sm shelf-head">
             <h2 class="section__title font-display q-my-none">
               <q-icon name="local_library" color="primary" />
               {{ searching ? 'Resultados' : 'Tu estantería' }}
             </h2>
             <q-space />
+            <!-- Cómo ver los libros: lomos en la estantería, portadas o lista -->
+            <q-btn-toggle
+              v-if="books.length"
+              :model-value="viewMode"
+              rounded
+              unelevated
+              dense
+              toggle-color="primary"
+              color="transparent"
+              text-color="primary"
+              class="format-toggle view-toggle"
+              :options="[
+                { value: 'spines', slot: 'spines' },
+                { value: 'grid', slot: 'grid' },
+                { value: 'list', slot: 'list' },
+              ]"
+              @update:model-value="library.setViewMode"
+            >
+              <template #spines>
+                <q-icon name="view_week" /><q-tooltip>Estantería (lomos)</q-tooltip>
+              </template>
+              <template #grid>
+                <q-icon name="grid_view" /><q-tooltip>Portadas</q-tooltip>
+              </template>
+              <template #list>
+                <q-icon name="view_list" /><q-tooltip>Lista</q-tooltip>
+              </template>
+            </q-btn-toggle>
             <q-btn-toggle
               v-if="books.length"
               v-model="formatFilter"
@@ -438,10 +467,34 @@ function removeBook(book: Book) {
             <div class="q-mt-sm">Lumi buscó por todas partes y no encontró nada…</div>
           </div>
 
-          <TransitionGroup v-else-if="viewMode === 'grid'" tag="div" name="shelf" class="shelf">
+          <template v-else>
+            <div v-if="sortKey !== 'custom'" class="drag-hint">
+              <q-icon name="pan_tool_alt" size="16px" />
+              {{ $q.platform.has.touch ? 'Mantén pulsado un libro y arrástralo' : 'Arrastra un libro' }} para ordenarlos a tu gusto
+            </div>
+          </template>
+
+          <BookShelf
+            v-if="loaded && visibleBooks.length && viewMode === 'spines'"
+            :books="visibleBooks"
+            @open="openBook"
+            @edit="editBook"
+            @shelves="editShelves"
+            @remove="removeBook"
+            @reorder="library.setVisibleOrder"
+          />
+
+          <TransitionGroup
+            v-else-if="loaded && visibleBooks.length && viewMode === 'grid'"
+            ref="gridEl"
+            tag="div"
+            name="shelf"
+            class="shelf"
+          >
             <BookCard
               v-for="(book, i) in visibleBooks"
               :key="book.id"
+              :data-id="book.id"
               :book="book"
               :style="{ '--i': Math.min(i, 24) }"
               class="shelf__item"
@@ -452,10 +505,11 @@ function removeBook(book: Book) {
             />
           </TransitionGroup>
 
-          <q-list v-else class="book-list">
+          <q-list v-else-if="loaded && visibleBooks.length" ref="listEl" class="book-list">
             <BookListItem
               v-for="book in visibleBooks"
               :key="book.id"
+              :data-id="book.id"
               :book="book"
               @open="openBook(book)"
               @edit="editBook(book)"
@@ -673,6 +727,26 @@ function removeBook(book: Book) {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+.shelf-head {
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.view-toggle :deep(.q-btn) {
+  padding: 4px 10px;
+}
+.drag-hint {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.78rem;
+  color: var(--ink-soft);
+  margin: -4px 0 10px;
+}
+/* Mientras se arrastra en portadas o lista */
+.shelf :deep(.drag-ghost),
+.book-list :deep(.drag-ghost) {
+  opacity: 0.35;
 }
 .format-toggle {
   border: 1px solid color-mix(in srgb, var(--ink) 15%, transparent);

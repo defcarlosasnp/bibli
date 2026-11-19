@@ -191,10 +191,11 @@ export const useLibraryStore = defineStore('library', () => {
   }
 
   async function removeBook(id: number) {
-    await db.transaction('rw', db.books, db.files, db.highlights, async () => {
+    await db.transaction('rw', [db.books, db.files, db.highlights, db.notes], async () => {
       await db.books.delete(id)
       await db.files.delete(id)
       await db.highlights.where('bookId').equals(id).delete()
+      await db.notes.where('bookId').equals(id).delete()
     })
   }
 

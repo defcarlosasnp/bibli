@@ -12,13 +12,15 @@ import ContinueReading from '@/components/ContinueReading.vue'
 import LumiOwl from '@/components/LumiOwl.vue'
 import ShelvesDialog from '@/components/ShelvesDialog.vue'
 import BookShelf from '@/components/BookShelf.vue'
+import { pickDailyQuote, type DailyQuote } from '@/services/dailyQuote'
+import { GOAL_CHOICES, finishedInYear, setYearGoal, yearGoal } from '@/services/goals'
 import { useSortableBooks } from '@/composables/useSortableBooks'
 import BackupDialog from '@/components/BackupDialog.vue'
 import { bookStatus, useLibraryStore, type SortKey, type StatusFilter } from '@/stores/library'
 import { FINISHED_THRESHOLD, celebrate, dailyGoalMinutes, dayKey, formatDuration, greeting, streakFrom } from '@/services/stats'
 import { checkAchievements, setAchievementAnnouncer } from '@/services/achievements'
 import { outfitFor } from '@/services/lumi'
-import { db, type Book, type ReadingDay } from '@/db'
+import { db, type Book, type Highlight, type ReadingDay } from '@/db'
 
 const $q = useQuasar()
 const router = useRouter()
@@ -33,6 +35,41 @@ const dragging = ref(false)
 const days = ref<ReadingDay[]>([])
 const daysSub = liveQuery(() => db.days.toArray()).subscribe((list) => (days.value = list))
 const streak = computed(() => streakFrom(days.value))
+
+// Frase del día (de tus subrayados)
+const highlights = ref<Highlight[]>([])
+const hlSub = liveQuery(() => db.highlights.toArray()).subscribe((list) => (highlights.value = list))
+const dailyQuote = computed(() => pickDailyQuote(highlights.value, books.value))
+function openQuote(q: DailyQuote) {
+  router.push({ name: 'reader', params: { id: q.book.id }, query: { at: q.position } })
+}
+
+// Reto del año
+const thisYear = new Date().getFullYear()
+const goal = ref(yearGoal())
+const doneThisYear = computed(() => finishedInYear(books.value, thisYear).length)
+function editGoal() {
+  $q.dialog({
+    title: `🎯 Reto de lectura ${thisYear}`,
+    message: '¿Cuántos libros quieres terminar este año?',
+    options: {
+      type: 'radio',
+      model: String(goal.value ?? 12),
+      items: [
+        ...GOAL_CHOICES.map((n) => ({
+          label: `${n} libros${n === 52 ? ' (uno por semana)' : n === 12 ? ' (uno al mes)' : ''}`,
+          value: String(n),
+        })),
+        ...(goal.value ? [{ label: 'Quitar el reto', value: '0' }] : []),
+      ],
+    },
+    cancel: true,
+  }).onOk((v: string) => {
+    const n = Number(v)
+    setYearGoal(n || null)
+    goal.value = n || null
+  })
+}
 const goalSeconds = dailyGoalMinutes() * 60
 const todaySeconds = computed(() => days.value.find((d) => d.date === dayKey())?.seconds ?? 0)
 const goalPercent = computed(() => Math.min(100, Math.round((todaySeconds.value / goalSeconds) * 100)))
@@ -47,6 +84,7 @@ onMounted(() => {
 })
 onBeforeUnmount(() => {
   daysSub.unsubscribe()
+  hlSub.unsubscribe()
   setAchievementAnnouncer(null)
 })
 const outfit = outfitFor()
@@ -306,6 +344,33 @@ function removeBook(book: Book) {
                       <span>de tu meta de {{ dailyGoalMinutes() }} min</span>
                     </span>
                   </button>
+                  <!-- Reto del año -->
+                  <button class="today__goal year-goal" @click="editGoal">
+                    <template v-if="goal">
+                      <q-circular-progress
+                        :value="Math.min(100, (doneThisYear / goal) * 100)"
+                        size="46px"
+                        :thickness="0.22"
+                        color="secondary"
+                        track-color="white"
+                        show-value
+                        class="text-weight-bold"
+                      >
+                        {{ doneThisYear >= goal ? '🏆' : doneThisYear }}
+                      </q-circular-progress>
+                      <span class="today__text">
+                        <b>Reto {{ thisYear }}: {{ doneThisYear }} / {{ goal }}</b>
+                        <span>{{ doneThisYear >= goal ? '¡Conseguido! 🎉' : `libros terminados` }}</span>
+                      </span>
+                    </template>
+                    <template v-else>
+                      <span class="year-goal__icon">🎯</span>
+                      <span class="today__text">
+                        <b>Reto {{ thisYear }}</b>
+                        <span>¿Cuántos libros este año?</span>
+                      </span>
+                    </template>
+                  </button>
                   <q-btn
                     rounded
                     unelevated
@@ -326,6 +391,16 @@ function removeBook(book: Book) {
                     label="Mis frases"
                     @click="router.push({ name: 'quotes' })"
                   />
+                  <q-btn
+                    rounded
+                    unelevated
+                    no-caps
+                    color="white"
+                    text-color="primary"
+                    icon="bookmark_add"
+                    label="Quiero leer"
+                    @click="router.push({ name: 'wishlist' })"
+                  />
                 </div>
               </div>
               <ReadingBuddy
@@ -333,9 +408,11 @@ function removeBook(book: Book) {
                 ref="buddy"
                 :books="books"
                 :streak="streak"
+                :quote="dailyQuote"
                 class="hero__buddy"
                 @open="openBook"
                 @import="pickFiles"
+                @quote="openQuote"
               />
             </div>
           </section>
@@ -654,6 +731,14 @@ function removeBook(book: Book) {
   font: inherit;
   cursor: pointer;
   text-align: left;
+}
+.year-goal__icon {
+  width: 46px;
+  height: 46px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.6rem;
 }
 .today__text {
   display: flex;

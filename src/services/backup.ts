@@ -5,7 +5,7 @@
  */
 import JSZip from 'jszip'
 import { Capacitor } from '@capacitor/core'
-import { db, type Book, type Highlight, type ReadingDay, type UnlockedAchievement } from '@/db'
+import { db, type Book, type BookNote, type Highlight, type ReadingDay, type UnlockedAchievement, type WishItem } from '@/db'
 
 const MANIFEST = 'bibli.json'
 const VERSION = 1
@@ -18,6 +18,9 @@ interface BackupBook extends Omit<Book, 'id'> {
 interface BackupHighlight extends Omit<Highlight, 'id' | 'bookId'> {
   bookHash: string
 }
+interface BackupNote extends Omit<BookNote, 'id' | 'bookId'> {
+  bookHash: string
+}
 interface Manifest {
   app: 'bibli'
   version: number
@@ -28,6 +31,9 @@ interface Manifest {
   days: ReadingDay[]
   achievements: UnlockedAchievement[]
   settings: Record<string, string>
+  /** Desde la versión con cuaderno y "Quiero leer" (las copias antiguas no lo traen). */
+  notes?: BackupNote[]
+  wishlist?: Omit<WishItem, 'id'>[]
 }
 
 export interface RestoreResult {
@@ -57,11 +63,13 @@ export async function libraryBytes() {
 }
 
 export async function createBackup(withBooks: boolean, onProgress: (f: number) => void): Promise<Blob> {
-  const [books, highlights, days, achievements] = await Promise.all([
+  const [books, highlights, days, achievements, notes, wishlist] = await Promise.all([
     db.books.toArray(),
     db.highlights.toArray(),
     db.days.toArray(),
     db.achievements.toArray(),
+    db.notes.toArray(),
+    db.wishlist.toArray(),
   ])
   const hashById = new Map(books.map((b) => [b.id, b.hash]))
   const zip = new JSZip()
@@ -90,6 +98,10 @@ export async function createBackup(withBooks: boolean, onProgress: (f: number) =
     days,
     achievements,
     settings: readSettings(),
+    notes: notes
+      .filter((n) => hashById.has(n.bookId))
+      .map(({ id: _id, bookId, ...n }) => ({ ...n, bookHash: hashById.get(bookId)! })),
+    wishlist: wishlist.map(({ id: _id, ...w }) => w),
   }
   zip.file(MANIFEST, JSON.stringify(manifest))
   return zip.generateAsync({ type: 'blob', compression: 'DEFLATE', mimeType: 'application/zip' }, (m) =>
@@ -210,6 +222,23 @@ export async function restoreBackup(file: Blob, onProgress: (f: number) => void)
     if (dup) continue
     await db.highlights.add({ ...h, bookId } as Highlight)
     result.highlights++
+  }
+
+  // Cuaderno: sin repetir notas iguales
+  for (const { bookHash, ...n } of data.notes ?? []) {
+    const bookId = idByHash.get(bookHash)
+    if (!bookId) continue
+    const dup = await db.notes
+      .where('bookId')
+      .equals(bookId)
+      .filter((x) => x.title === n.title && x.text === n.text)
+      .count()
+    if (!dup) await db.notes.add({ ...n, bookId } as BookNote)
+  }
+  // Quiero leer: sin repetir títulos
+  const wished = new Set((await db.wishlist.toArray()).map((w) => w.title.toLowerCase()))
+  for (const w of data.wishlist ?? []) {
+    if (!wished.has(w.title.toLowerCase())) await db.wishlist.add(w as WishItem)
   }
 
   // Estadísticas: por cada día, el valor mayor (el mismo día pudo leerse en los dos aparatos)

@@ -4,6 +4,7 @@ import LumiOwl, { type OwlMood } from './LumiOwl.vue'
 import type { Book } from '@/db'
 import { FINISHED_THRESHOLD } from '@/services/stats'
 import { outfitFor } from '@/services/lumi'
+import type { DailyQuote } from '@/services/dailyQuote'
 
 interface Part {
   t: string
@@ -12,16 +13,16 @@ interface Part {
 interface Message {
   mood: OwlMood
   parts: Part[]
-  action?: { label: string; icon: string; book?: Book; kind: 'open' | 'import' }
+  action?: { label: string; icon: string; book?: Book; kind: 'open' | 'import' | 'quote' }
 }
 
-const props = defineProps<{ books: Book[]; streak: number }>()
-const emit = defineEmits<{ open: [book: Book]; import: [] }>()
+const props = defineProps<{ books: Book[]; streak: number; quote?: DailyQuote | null }>()
+const emit = defineEmits<{ open: [book: Book]; import: []; quote: [q: DailyQuote] }>()
 
 const TIPS: Message[] = [
   { mood: 'happy', parts: [{ t: 'Truco: en el lector pulsa ' }, { t: '🔖', b: true }, { t: ' para guardar un marcador.' }] },
-  { mood: 'idle', parts: [{ t: 'Organiza tus libros en ' }, { t: 'colecciones', b: true }, { t: ' desde ⋮ → Editar.' }] },
-  { mood: 'sleepy', parts: [{ t: '¿Lees de noche? Prueba el ' }, { t: 'modo nocturno 🌙', b: true }, { t: ' en el lector.' }] },
+  { mood: 'idle', parts: [{ t: 'Organiza tus libros en ' }, { t: 'estanterías', b: true }, { t: ' desde el menú ⋮ de cada libro.' }] },
+  { mood: 'sleepy', parts: [{ t: '¿Lees de noche? Prueba el ' }, { t: 'tema Noche o Sepia 🌙', b: true }, { t: ' en el botón Aa del lector.' }] },
   { mood: 'happy', parts: [{ t: 'Puedes añadir varios libros a la vez. ¡Cuantos más, mejor! 📚' }] },
 ]
 
@@ -64,6 +65,15 @@ const messages = computed<Message[]>(() => {
         action: { label: 'Terminarlo', icon: 'flag', book: b, kind: 'open' },
       })
     }
+  }
+  if (props.quote) {
+    const q = props.quote
+    const text = q.text.length > 170 ? `${q.text.slice(0, 167).trimEnd()}…` : q.text
+    list.splice(1, 0, {
+      mood: 'happy',
+      parts: [{ t: '📜 Frase del día: ' }, { t: `«${text}»`, b: true }, { t: ` — ${q.book.title}` }],
+      action: { label: 'Ver en el libro', icon: 'format_quote', book: q.book, kind: 'quote' },
+    })
   }
   if (outfit.line) {
     list.splice(1, 0, { mood: outfit.hat === 'nightcap' ? 'sleepy' : 'happy', parts: [{ t: outfit.line }] })
@@ -157,6 +167,7 @@ function runAction() {
   const a = current.value.action
   if (!a) return
   if (a.kind === 'import') emit('import')
+  else if (a.kind === 'quote' && props.quote) emit('quote', props.quote)
   else if (a.book) emit('open', a.book)
 }
 

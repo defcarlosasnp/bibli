@@ -15,8 +15,28 @@ import {
 } from '@/services/stats'
 import { ACHIEVEMENTS } from '@/services/achievements'
 import LumiOwl from '@/components/LumiOwl.vue'
+import { useQuasar } from 'quasar'
+import { reminderSettings, remindersSupported, setReminder } from '@/services/reminder'
 
 const router = useRouter()
+const $q = useQuasar()
+const thisYear = new Date().getFullYear()
+
+// ---------- Recordatorio diario ----------
+const reminder = ref(reminderSettings())
+async function saveReminder(changes: Partial<typeof reminder.value>) {
+  const next = { ...reminder.value, ...changes }
+  const ok = await setReminder(next)
+  if (!ok && next.on) {
+    $q.notify({ type: 'warning', message: 'Sin permiso para avisos. Actívalo en los ajustes de Android → Apps → Bibli.' })
+    return
+  }
+  reminder.value = next
+  if (changes.on) $q.notify({ message: `Te avisaré a las ${next.time} los días que no hayas leído 🦉`, timeout: 2500 })
+}
+
+const onReminderToggle = (on: boolean) => saveReminder({ on })
+const onReminderTime = (e: Event) => saveReminder({ time: (e.target as HTMLInputElement).value || reminder.value.time })
 
 const days = ref<ReadingDay[]>([])
 const books = ref<Book[]>([])
@@ -134,6 +154,16 @@ const unlockedCount = computed(() => achievements.value.filter((a) => a.unlocked
           <LumiOwl :mood="todayPercent >= 100 ? 'excited' : 'happy'" :size="70" class="today__owl gt-xs" />
         </section>
 
+        <!-- Tu año en libros -->
+        <button class="card year-banner" @click="router.push({ name: 'year' })">
+          <span class="year-banner__icon">🎁</span>
+          <span class="year-banner__text">
+            <b class="font-display">Tu año en libros {{ thisYear }}</b>
+            <span>Libros, horas, rachas, tu autor favorito y tus mejores frases</span>
+          </span>
+          <q-icon name="chevron_right" size="28px" />
+        </button>
+
         <!-- Resumen -->
         <section class="grid">
           <div v-for="c in cards" :key="c.label" class="card stat">
@@ -167,6 +197,40 @@ const unlockedCount = computed(() => achievements.value.filter((a) => a.unlocked
           </div>
           <div class="chart__labels">
             <span v-for="d in week" :key="d.date" :class="{ strong: d.isToday }">{{ d.label }}</span>
+          </div>
+        </section>
+
+        <!-- Recordatorio diario -->
+        <section class="card">
+          <div class="row items-center no-wrap">
+            <div class="col">
+              <h2 class="font-display q-my-none">🔔 Recordatorio diario</h2>
+              <div class="muted">
+                <template v-if="remindersSupported">
+                  Un aviso suave a la hora que elijas. Si ese día ya leíste, no te molesta.
+                </template>
+                <template v-else>
+                  Disponible en la app de Android. En el navegador no se pueden programar avisos.
+                </template>
+              </div>
+            </div>
+            <q-toggle
+              :model-value="reminder.on"
+              :disable="!remindersSupported"
+              color="accent"
+              @update:model-value="onReminderToggle"
+            />
+          </div>
+          <div v-if="remindersSupported && reminder.on" class="row items-center q-mt-sm q-gutter-sm">
+            <span>Avisarme a las</span>
+            <q-input
+              :model-value="reminder.time"
+              type="time"
+              dense
+              outlined
+              style="width: 120px"
+              @change="onReminderTime"
+            />
           </div>
         </section>
 
@@ -261,6 +325,36 @@ h2 {
 .ring__inner span {
   font-size: 0.7rem;
   opacity: 0.8;
+}
+.year-banner {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  border: 0;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  color: #fff;
+  background:
+    radial-gradient(circle at 90% 10%, rgba(255, 209, 102, 0.5), transparent 45%),
+    linear-gradient(135deg, #8a5534, #c0612d 60%, #e2954a);
+}
+.year-banner__icon {
+  font-size: 2.2rem;
+}
+.year-banner__text {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.year-banner__text b {
+  font-size: 1.2rem;
+}
+.year-banner__text span {
+  font-size: 0.85rem;
+  opacity: 0.9;
 }
 .grid {
   display: grid;

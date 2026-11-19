@@ -35,6 +35,14 @@ export interface Book {
   seriesIndex?: number
   /** Ya se buscaron los datos que faltaban (saga, autor, portada): no se vuelve a buscar. */
   infoChecked?: boolean
+  /** Cuándo se abrió por primera vez y cuándo se terminó (ms). */
+  startedAt?: number
+  finishedAt?: number
+  /** Segundos leyendo (o escuchando) este libro. */
+  readingSeconds?: number
+  /** Valoración al terminarlo: 1–5 estrellas y una reseña corta. */
+  rating?: number
+  review?: string
 }
 
 /** El binario va en su propia tabla para no cargarlo al listar la biblioteca. */
@@ -77,6 +85,29 @@ export interface ReadingDay {
   listenSeconds: number
 }
 
+/** Cuaderno del libro: personajes, lugares, teorías o notas libres. */
+export type NoteKind = 'character' | 'place' | 'theory' | 'note'
+export interface BookNote {
+  id: number
+  bookId: number
+  kind: NoteKind
+  title: string
+  text: string
+  createdAt: number
+  updatedAt: number
+}
+
+/** Libro que se quiere leer (aún no está en la biblioteca). */
+export interface WishItem {
+  id: number
+  title: string
+  author: string
+  /** URL de la portada en Open Library, si hay. */
+  cover: string | null
+  year?: number
+  addedAt: number
+}
+
 export interface UnlockedAchievement {
   id: string
   unlockedAt: number
@@ -88,6 +119,8 @@ export const db = new Dexie('bibli') as Dexie & {
   highlights: EntityTable<Highlight, 'id'>
   days: EntityTable<ReadingDay, 'date'>
   achievements: EntityTable<UnlockedAchievement, 'id'>
+  notes: EntityTable<BookNote, 'id'>
+  wishlist: EntityTable<WishItem, 'id'>
 }
 
 db.version(1).stores({
@@ -127,3 +160,8 @@ db.version(3)
       .table('days')
       .bulkPut(legacy.map((date) => ({ date, seconds: 0, pages: 0, listenSeconds: 0 })))
   })
+
+db.version(4).stores({
+  notes: '++id, bookId, kind, createdAt',
+  wishlist: '++id, addedAt',
+})

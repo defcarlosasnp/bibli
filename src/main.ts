@@ -4,6 +4,7 @@ import { Quasar, Notify, Dialog } from 'quasar'
 import { Capacitor } from '@capacitor/core'
 import { App as CapApp } from '@capacitor/app'
 import { freeNeuralStorageOnMobile } from './services/neuralVoice'
+import { refreshReminder } from './services/reminder'
 import quasarLang from 'quasar/lang/es'
 import '@quasar/extras/material-icons/material-icons.css'
 import '@fontsource-variable/fraunces'
@@ -55,6 +56,8 @@ if (Capacitor.getPlatform() === 'android') {
 }
 
 freeNeuralStorageOnMobile()
+// Recordatorio diario (si está activado): al día y con el libro que estás leyendo
+refreshReminder()
 
 // Web instalada (PWA): funciona sin conexión. En la app nativa los archivos ya van dentro del APK.
 if (import.meta.env.PROD && 'serviceWorker' in navigator && !Capacitor.isNativePlatform()) {

@@ -2,6 +2,8 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowRef, nextTick, toRaw, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { formatRemaining, paceVersion, recordPace, secondsPer } from '@/services/pace'
+import { askRating, openNotebook } from '@/services/bookActions'
+import { refreshReminder } from '@/services/reminder'
 import { useQuasar } from 'quasar'
 import { liveQuery } from 'dexie'
 import ePub, { EpubCFI, type Book as EpubBook, type Rendition, type NavItem } from 'epubjs'
@@ -151,7 +153,12 @@ function saveProgress(position: string, progress: number | null) {
   if (progress == null) return
   if (progress >= FINISHED_THRESHOLD && !finished) {
     finished = true
+    db.books.update(bookId, { finishedAt: Date.now() })
     celebrate()
+    // Un momento después, para que se vea la celebración: ¿qué te pareció?
+    setTimeout(() => {
+      if (book.value && !book.value.rating) askRating(book.value)
+    }, 2500)
     lumiSay('¡¡Lo terminaste!! 🎉 Estoy orgullosísimo de ti', 'excited', 6000)
     setTimeout(checkAchievements, 3000)
     $q.notify({
@@ -189,7 +196,7 @@ onMounted(async () => {
   finished = meta.progress >= FINISHED_THRESHOLD
   lastProgress = meta.progress
   recordReadingDay()
-  db.books.update(bookId, { lastOpenedAt: Date.now() })
+  db.books.update(bookId, { lastOpenedAt: Date.now(), ...(meta.startedAt ? {} : { startedAt: Date.now() }) })
   const data = await file.data.arrayBuffer()
   loading.value = false
   await nextTick()
@@ -218,6 +225,9 @@ onBeforeUnmount(() => {
   clearInterval(sessionTimer)
   clearInterval(statsTimer)
   highlightsSub.unsubscribe()
+  bookSub.unsubscribe()
+  // Si hoy ya se leyó, el recordatorio de hoy sobra
+  refreshReminder()
   setAchievementAnnouncer(null)
   window.removeEventListener('pointerdown', markActivity)
   window.removeEventListener('pointerdown', onTapStart, true)
@@ -793,6 +803,14 @@ const footerHeight = ref(0)
 // ---------- Subrayados, notas y diccionario ----------
 
 const highlights = ref<Highlight[]>([])
+/** La valoración puede cambiar desde un diálogo: se mantiene al día sin recargar el libro. */
+const bookSub = liveQuery(() => db.books.get(bookId)).subscribe((b) => {
+  if (b && book.value) {
+    book.value.rating = b.rating
+    book.value.review = b.review
+  }
+})
+
 const highlightsSub = liveQuery(() => db.highlights.where('bookId').equals(bookId).sortBy('createdAt')).subscribe(
   (list) => (highlights.value = list),
 )
@@ -1195,6 +1213,13 @@ const statsTimer = setInterval(() => {
   const listening = readAloud.playing
   if (!listening && Date.now() - lastActivity > IDLE_AFTER_MS) return
   addReading({ seconds: READING_TICK_S, listenSeconds: listening ? READING_TICK_S : 0 })
+  // Tiempo dedicado a este libro
+  db.books
+    .where('id')
+    .equals(bookId)
+    .modify((b: Book) => {
+      b.readingSeconds = (b.readingSeconds ?? 0) + READING_TICK_S
+    })
   if (++statsTicks % 4 === 0) checkAchievements()
 }, READING_TICK_S * 1000)
 
@@ -1516,6 +1541,20 @@ function onSwipe({ direction }: { direction?: string }) {
           </q-item>
 
           <q-separator class="q-my-sm" />
+          <q-item v-if="book" clickable @click="openNotebook(book)">
+            <q-item-section avatar><q-icon name="menu_book" color="accent" /></q-item-section>
+            <q-item-section>
+              <q-item-label>Cuaderno del libro</q-item-label>
+              <q-item-label caption>Personajes, lugares y teorías</q-item-label>
+            </q-item-section>
+          </q-item>
+          <q-item v-if="book" clickable @click="askRating(book)">
+            <q-item-section avatar><q-icon :name="book.rating ? 'star' : 'star_border'" color="accent" /></q-item-section>
+            <q-item-section>
+              <q-item-label>{{ book.rating ? 'Tu valoración' : 'Valorar este libro' }}</q-item-label>
+              <q-item-label caption>{{ book.rating ? '★'.repeat(book.rating) + '☆'.repeat(5 - book.rating) : 'Estrellas y una reseña corta' }}</q-item-label>
+            </q-item-section>
+          </q-item>
           <q-item tag="label">
             <q-item-section avatar><q-icon name="pets" color="accent" /></q-item-section>
             <q-item-section>

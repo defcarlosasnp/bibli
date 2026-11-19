@@ -1,10 +1,22 @@
 <script setup lang="ts">
 import type { Book } from '@/db'
-import { FINISHED_THRESHOLD } from '@/services/stats'
+import { computed } from 'vue'
+import { FINISHED_THRESHOLD, formatDuration } from '@/services/stats'
+import { askRating, openNotebook, shortDate } from '@/services/bookActions'
 
 /** Al tocar un lomo en la estantería: la portada y lo que se puede hacer con el libro. */
-defineProps<{ book: Book }>()
+const props = defineProps<{ book: Book }>()
 const emit = defineEmits<{ open: []; edit: []; shelves: []; remove: [] }>()
+
+/** Empezado el 3 nov · Terminado el 18 nov · 12 h 30 min leídas */
+const history = computed(() => {
+  const b = props.book
+  const parts: string[] = []
+  if (b.startedAt) parts.push(`Empezado el ${shortDate(b.startedAt)}`)
+  if (b.finishedAt) parts.push(`Terminado el ${shortDate(b.finishedAt)}`)
+  if (b.readingSeconds && b.readingSeconds >= 60) parts.push(`${formatDuration(b.readingSeconds)} de lectura`)
+  return parts
+})
 </script>
 
 <template>
@@ -25,6 +37,13 @@ const emit = defineEmits<{ open: []; edit: []; shelves: []; remove: [] }>()
           <span v-if="book.progress >= FINISHED_THRESHOLD">🏆 Leído</span>
           <span v-else-if="book.progress > 0">{{ Math.round(book.progress * 100) }}% leído</span>
           <span v-else>Sin empezar</span>
+        </div>
+        <div v-if="book.rating" class="peek__stars" :title="book.review">
+          {{ '★'.repeat(book.rating) }}<span class="peek__stars-off">{{ '★'.repeat(5 - book.rating) }}</span>
+        </div>
+        <div v-if="book.review" class="peek__review">«{{ book.review }}»</div>
+        <div v-if="history.length" class="peek__history">
+          <div v-for="line in history" :key="line">{{ line }}</div>
         </div>
         <q-linear-progress
           v-if="book.progress > 0 && book.progress < FINISHED_THRESHOLD"
@@ -47,6 +66,12 @@ const emit = defineEmits<{ open: []; edit: []; shelves: []; remove: [] }>()
         <div class="row justify-between q-mt-xs">
           <q-btn v-close-popup flat round dense icon="edit" aria-label="Editar" @click="emit('edit')">
             <q-tooltip>Editar</q-tooltip>
+          </q-btn>
+          <q-btn v-close-popup flat round dense icon="menu_book" aria-label="Cuaderno" @click="openNotebook(book)">
+            <q-tooltip>Cuaderno del libro</q-tooltip>
+          </q-btn>
+          <q-btn v-close-popup flat round dense :icon="book.rating ? 'star' : 'star_border'" aria-label="Valorar" @click="askRating(book)">
+            <q-tooltip>Valorar</q-tooltip>
           </q-btn>
           <q-btn v-close-popup flat round dense icon="collections_bookmark" aria-label="Estanterías" @click="emit('shelves')">
             <q-tooltip>Estanterías</q-tooltip>
@@ -106,6 +131,30 @@ const emit = defineEmits<{ open: []; edit: []; shelves: []; remove: [] }>()
   color: var(--accent);
   font-weight: 600;
   margin-top: 2px;
+}
+.peek__stars {
+  color: #f2b13c;
+  letter-spacing: 1px;
+  margin-top: 4px;
+}
+.peek__stars-off {
+  opacity: 0.25;
+}
+.peek__review {
+  font-size: 0.75rem;
+  font-style: italic;
+  opacity: 0.8;
+  margin-top: 2px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.peek__history {
+  font-size: 0.7rem;
+  opacity: 0.65;
+  margin-top: 4px;
+  line-height: 1.35;
 }
 .peek__meta {
   display: flex;

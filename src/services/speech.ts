@@ -128,6 +128,15 @@ function loadWebVoices(): Promise<SpeechSynthesisVoice[]> {
   })
 }
 
+/** Lo que entrega el navegador tal cual (para "Detalles técnicos"). */
+export function rawSpanishVoices(): string[] {
+  if (native || !web) return []
+  return speechSynthesis
+    .getVoices()
+    .filter((v) => v.lang.toLowerCase().replace('_', '-').startsWith('es'))
+    .map((v) => `${v.name} · ${v.voiceURI} · ${v.lang}${v.localService ? '' : ' · red'}${v.default ? ' · pred.' : ''}`)
+}
+
 /** Voces en español (o todas, si el dispositivo no tiene ninguna en español), las mejores primero. */
 export async function listVoices(): Promise<Voice[]> {
   let all: Voice[] = []

@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { computed, reactive, type UnwrapNestedRefs } from 'vue'
+import { computed, reactive, ref, type UnwrapNestedRefs } from 'vue'
 import { useQuasar } from 'quasar'
 import { RATES, type ReadAloud, type SleepMode } from '@/composables/useReadAloud'
-import { QUALITY_LABEL, openVoiceInstaller, voiceHelp } from '@/services/speech'
+import { QUALITY_LABEL, openVoiceInstaller, rawSpanishVoices, voiceHelp } from '@/services/speech'
 import {
   NEURAL_PREFIX,
   NEURAL_VOICES,
@@ -68,6 +68,29 @@ function removeNeural(id: string, label: string) {
     if (props.ra.voiceId === id) props.ra.setVoice(null)
     await removeNeuralVoice(neuralKey(id))
     await props.ra.refreshVoices()
+  })
+}
+
+const isApple = /iPhone|iPad|iPod|Macintosh/.test(navigator.userAgent)
+const rawVoices = ref<string[]>([])
+function loadRaw() {
+  rawVoices.value = rawSpanishVoices()
+}
+
+async function refresh() {
+  const before = props.ra.voices.length
+  await props.ra.refreshVoices()
+  loadRaw()
+  const good = props.ra.voices.filter((v) => v.quality === 'natural' || v.quality === 'good').length
+  const n = props.ra.voices.length
+  $q.notify({
+    message:
+      n > before
+        ? `¡Hay ${n - before} voz${n - before === 1 ? '' : 'es'} nueva${n - before === 1 ? '' : 's'}!`
+        : good
+          ? `${n} voces, ${good} de buena calidad`
+          : `Sigue habiendo ${n} voces, todas básicas`,
+    timeout: 2500,
   })
 }
 
@@ -203,8 +226,18 @@ function rateLabel(r: number) {
                     label="Descargar voces"
                     @click="openVoiceInstaller()"
                   />
-                  <q-btn flat dense no-caps color="secondary" icon="refresh" label="Actualizar lista" @click="ra.refreshVoices()" />
+                  <q-btn flat dense no-caps color="secondary" icon="refresh" label="Actualizar lista" @click="refresh" />
                 </div>
+                <p v-if="isApple" class="q-mt-sm q-mb-none text-caption">
+                  Si acabas de descargarla y no aparece, cierra Bibli del todo (desliza hacia arriba en el
+                  selector de apps) y vuelve a abrirla.
+                </p>
+              </div>
+            </q-expansion-item>
+            <q-expansion-item dense icon="bug_report" label="Detalles técnicos" header-class="text-grey-7" @show="loadRaw">
+              <div class="q-px-md q-pb-sm raw-voices">
+                <div v-if="!rawVoices.length">El navegador no entrega ninguna voz en español.</div>
+                <div v-for="line in rawVoices" :key="line">{{ line }}</div>
               </div>
             </q-expansion-item>
           </q-list>
@@ -271,6 +304,13 @@ function rateLabel(r: number) {
 </template>
 
 <style scoped>
+.raw-voices {
+  font-family: ui-monospace, monospace;
+  font-size: 0.7rem;
+  line-height: 1.4;
+  word-break: break-all;
+  opacity: 0.85;
+}
 .tts-bar {
   padding: 8px 10px 2px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.12);

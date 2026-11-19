@@ -36,15 +36,28 @@ function serviceWorker(): Plugin {
  * - Un aviso del motor de pronunciación lanzaba un error que nadie recogía y la frase se quedaba
  *   esperando para siempre (pasaba en el iPhone): ahora solo se anota.
  */
+const EXTRA_PIPER_VOICES = ['es_AR-daniela-high']
+/** "es_AR-daniela-high" → "es/es_AR/daniela/high/es_AR-daniela-high.onnx" (igual que modelPath del worker) */
+const piperPath = (v: string) => {
+  const [locale, name, quality] = v.split('-')
+  return `${locale.split('_')[0]}/${locale}/${name}/${quality}/${v}.onnx`
+}
+
 function piperPatch(): Plugin {
   return {
     name: 'bibli-piper-patch',
     transform(code, id) {
       if (!id.includes('piper-tts-web') || !code.includes('const speakerId = 0;')) return
       const patched = code
+        // Voces que la librería no trae en su lista (los archivos los descarga Bibli)
+        .replace('const PATH_MAP = {', `const PATH_MAP = {\n  ${EXTRA_PIPER_VOICES.map((v) => `"${v}": "${piperPath(v)}",`).join('\n  ')}`)
         .replace('const speakerId = 0;', 'const speakerId = globalThis.__bibliPiperSpeaker ?? 0;')
         .replace(/printErr: \(message\) => \{\s*throw new Error\(message\);\s*\}/, 'printErr: (message) => { console.warn("piper:", message); }')
-      if (!patched.includes('__bibliPiperSpeaker') || patched.includes('throw new Error(message)')) {
+      if (
+        !patched.includes('__bibliPiperSpeaker') ||
+        patched.includes('throw new Error(message)') ||
+        !patched.includes(`"${EXTRA_PIPER_VOICES[0]}":`)
+      ) {
         this.error('piper-tts-web cambió: revisa piperPatch en vite.config.ts')
       }
       return { code: patched, map: null }

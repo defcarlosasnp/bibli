@@ -11,6 +11,9 @@ import { TtsSession } from '@mintplex-labs/piper-tts-web'
 declare const self: DedicatedWorkerGlobalScope
 
 const HF_BASE = 'https://huggingface.co/diffusionstudio/piper-voices/resolve/main'
+/** Repositorio oficial de Piper, para voces que la copia anterior no tiene (p. ej. Daniela). */
+const HF_OFFICIAL = 'https://huggingface.co/rhasspy/piper-voices/resolve/main'
+const OFFICIAL_ONLY = new Set(['es_AR-daniela-high'])
 /** Mismos archivos y versiones que espera la librería. */
 const RUNTIME = {
   ort: 'https://cdnjs.cloudflare.com/ajax/libs/onnxruntime-web/1.18.0/ort-wasm-simd.wasm',
@@ -105,17 +108,18 @@ async function stored(): Promise<string[]> {
 
 async function download(voice: string, progress: (loaded: number, total: number) => void) {
   const path = modelPath(voice)
+  const base = OFFICIAL_ONLY.has(voice) ? HF_OFFICIAL : HF_BASE
   const d = await dir('piper')
   // Tamaños aproximados para una barra de progreso estable: motor ~30 MB + voz ~63 MB
   const RUNTIME_BYTES = 30e6
   let modelTotal = 63e6
   await ensureRuntime((n) => progress(Math.min(n, RUNTIME_BYTES), RUNTIME_BYTES + modelTotal))
   await d.removeEntry(`${voice}.onnx.json`).catch(() => undefined)
-  await downloadTo(d, `${voice}.onnx`, `${HF_BASE}/${path}`, (n, total) => {
+  await downloadTo(d, `${voice}.onnx`, `${base}/${path}`, (n, total) => {
     if (total) modelTotal = total
     progress(RUNTIME_BYTES + n, RUNTIME_BYTES + modelTotal)
   })
-  await downloadTo(d, `${voice}.onnx.json`, `${HF_BASE}/${path}.json`)
+  await downloadTo(d, `${voice}.onnx.json`, `${base}/${path}.json`)
 }
 
 async function remove(voice: string) {

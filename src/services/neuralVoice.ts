@@ -20,6 +20,14 @@ export interface NeuralVoiceInfo {
 
 export const NEURAL_VOICES: NeuralVoiceInfo[] = [
   {
+    key: 'es_AR-daniela-high',
+    label: 'Daniela',
+    detail: 'Español de Argentina · voz femenina, la más natural (en el móvil tarda un poco más)',
+    lang: 'es-AR',
+    sizeMB: 114,
+    mobile: true,
+  },
+  {
     key: 'es_ES-carlfm-x_low',
     label: 'Carlos (ligera)',
     detail: 'Español de España · voz masculina, la más rápida (para el móvil)',

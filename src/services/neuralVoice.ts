@@ -28,6 +28,22 @@ export const NEURAL_VOICES: NeuralVoiceInfo[] = [
     mobile: true,
   },
   {
+    key: 'es_MX-laura-high',
+    label: 'Laura',
+    detail: 'Español de México · voz femenina (voz de la comunidad)',
+    lang: 'es-MX',
+    sizeMB: 63,
+    mobile: true,
+  },
+  {
+    key: 'es_ES-julia-medium',
+    label: 'Julia',
+    detail: 'Español · voz femenina (voz de la comunidad)',
+    lang: 'es-ES',
+    sizeMB: 64,
+    mobile: true,
+  },
+  {
     key: 'es_ES-carlfm-x_low',
     label: 'Carlos (ligera)',
     detail: 'Español de España · voz masculina, la más rápida (para el móvil)',

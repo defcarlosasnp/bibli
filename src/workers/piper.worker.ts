@@ -13,7 +13,16 @@ declare const self: DedicatedWorkerGlobalScope
 const HF_BASE = 'https://huggingface.co/diffusionstudio/piper-voices/resolve/main'
 /** Repositorio oficial de Piper, para voces que la copia anterior no tiene (p. ej. Daniela). */
 const HF_OFFICIAL = 'https://huggingface.co/rhasspy/piper-voices/resolve/main'
-const OFFICIAL_ONLY = new Set(['es_AR-daniela-high'])
+/**
+ * Voces que no están en la copia de la librería: de dónde bajar el modelo y su configuración.
+ * Se guardan como <voz>.onnx igual que las demás. Deben coincidir con EXTRA_PIPER_VOICES de vite.config.ts.
+ */
+const EXTRA_SOURCES: Record<string, string> = {
+  'es_AR-daniela-high': `${HF_OFFICIAL}/es/es_AR/daniela/high/es_AR-daniela-high.onnx`,
+  // Voces de la comunidad (Piper): Laura (México, uso no comercial) y Julia (MIT)
+  'es_MX-laura-high': 'https://huggingface.co/HirCoir/Piper-TTS-Laura/resolve/main/es_MX-laura-high.onnx',
+  'es_ES-julia-medium': 'https://huggingface.co/PabloLXX/Julia-piper-es/resolve/main/es_Julia.onnx',
+}
 /** Mismos archivos y versiones que espera la librería. */
 const RUNTIME = {
   ort: 'https://cdnjs.cloudflare.com/ajax/libs/onnxruntime-web/1.18.0/ort-wasm-simd.wasm',
@@ -107,19 +116,18 @@ async function stored(): Promise<string[]> {
 }
 
 async function download(voice: string, progress: (loaded: number, total: number) => void) {
-  const path = modelPath(voice)
-  const base = OFFICIAL_ONLY.has(voice) ? HF_OFFICIAL : HF_BASE
+  const modelUrl = EXTRA_SOURCES[voice] ?? `${HF_BASE}/${modelPath(voice)}`
   const d = await dir('piper')
   // Tamaños aproximados para una barra de progreso estable: motor ~30 MB + voz ~63 MB
   const RUNTIME_BYTES = 30e6
   let modelTotal = 63e6
   await ensureRuntime((n) => progress(Math.min(n, RUNTIME_BYTES), RUNTIME_BYTES + modelTotal))
   await d.removeEntry(`${voice}.onnx.json`).catch(() => undefined)
-  await downloadTo(d, `${voice}.onnx`, `${base}/${path}`, (n, total) => {
+  await downloadTo(d, `${voice}.onnx`, modelUrl, (n, total) => {
     if (total) modelTotal = total
     progress(RUNTIME_BYTES + n, RUNTIME_BYTES + modelTotal)
   })
-  await downloadTo(d, `${voice}.onnx.json`, `${base}/${path}.json`)
+  await downloadTo(d, `${voice}.onnx.json`, `${modelUrl}.json`)
 }
 
 async function remove(voice: string) {

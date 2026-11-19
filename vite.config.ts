@@ -30,19 +30,18 @@ function serviceWorker(): Plugin {
   }
 }
 
+// Voces que no trae la librería. Deben coincidir con EXTRA_SOURCES de src/workers/piper.worker.ts
+const EXTRA_PIPER_VOICES = ['es_AR-daniela-high', 'es_MX-laura-high', 'es_ES-julia-medium']
+/** La librería solo mira el nombre del archivo para buscarlo en el almacenamiento del navegador. */
+const piperPath = (v: string) => `extra/${v}.onnx`
+
 /**
- * Dos arreglos a la librería de voz neuronal (piper-tts-web 1.0.5) al compilar:
+ * Arreglos a la librería de voz neuronal (piper-tts-web 1.0.5) al compilar:
  * - Elegir el hablante en modelos con varios (p. ej. la voz femenina de "sharvard"); trae fijo el 0.
  * - Un aviso del motor de pronunciación lanzaba un error que nadie recogía y la frase se quedaba
  *   esperando para siempre (pasaba en el iPhone): ahora solo se anota.
+ * - Añadir a su lista las voces extra (EXTRA_PIPER_VOICES).
  */
-const EXTRA_PIPER_VOICES = ['es_AR-daniela-high']
-/** "es_AR-daniela-high" → "es/es_AR/daniela/high/es_AR-daniela-high.onnx" (igual que modelPath del worker) */
-const piperPath = (v: string) => {
-  const [locale, name, quality] = v.split('-')
-  return `${locale.split('_')[0]}/${locale}/${name}/${quality}/${v}.onnx`
-}
-
 function piperPatch(): Plugin {
   return {
     name: 'bibli-piper-patch',

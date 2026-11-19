@@ -138,6 +138,35 @@ async function synth(voice: string, text: string): Promise<ArrayBuffer> {
   return blob.arrayBuffer()
 }
 
+/** Prueba paso a paso, contando qué hace y cuánto tarda (para ver dónde se atasca en un móvil). */
+async function diagnose(voice: string, text: string, log: (s: string) => void): Promise<ArrayBuffer> {
+  const t0 = performance.now()
+  const secs = (from = t0) => `${((performance.now() - from) / 1000).toFixed(1)} s`
+  log(`Voces guardadas: ${(await stored()).join(', ') || 'ninguna'}`)
+  log(`Memoria del aparato: ${(navigator as unknown as { deviceMemory?: number }).deviceMemory ?? '?'} GB · núcleos: ${navigator.hardwareConcurrency ?? '?'}`)
+  await ensureRuntime()
+  log(`Motor descargado (${secs()})`)
+  TtsSession._instance = null
+  session = null
+  log('Cargando el modelo de voz…')
+  const t1 = performance.now()
+  session = await TtsSession.create({ voiceId: voice, wasmPaths: await runtimeUrls() })
+  currentVoice = voice
+  log(`Modelo cargado en ${secs(t1)}`)
+  log('Generando una frase de prueba…')
+  const t2 = performance.now()
+  const buf = await (await session.predict(text)).arrayBuffer()
+  const view = new DataView(buf)
+  const rate = buf.byteLength > 44 ? view.getUint32(24, true) : 0
+  const audio = rate ? (buf.byteLength - 44) / 2 / rate : 0
+  const took = (performance.now() - t2) / 1000
+  log(`Generados ${audio.toFixed(1)} s de audio en ${took.toFixed(1)} s → ${took ? (audio / took).toFixed(2) : '?'}× tiempo real`)
+  return buf
+}
+
+// Los fallos que no pasan por un try (p. ej. dentro del WebAssembly) también se cuentan
+self.addEventListener('unhandledrejection', (e) => self.postMessage({ id: -1, log: `Error: ${String(e.reason?.message ?? e.reason)}` }))
+
 // Las peticiones se atienden de una en una (el modelo no admite dos a la vez)
 let queue: Promise<unknown> = Promise.resolve()
 
@@ -161,12 +190,15 @@ self.onmessage = (e: MessageEvent) => {
       } else if (type === 'synth') {
         const wav = await synth(voice, text)
         reply({ result: wav }, [wav])
+      } else if (type === 'diagnose') {
+        const wav = await diagnose(voice, text, (log) => reply({ log }))
+        reply({ result: wav }, [wav])
       }
     } catch (err) {
       reply({ error: err instanceof Error ? err.message : String(err) })
     }
   }
   // Las descargas no esperan a la cola de síntesis
-  if (type === 'synth') queue = queue.then(task)
+  if (type === 'synth' || type === 'diagnose') queue = queue.then(task)
   else task()
 }

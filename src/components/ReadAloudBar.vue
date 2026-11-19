@@ -5,7 +5,9 @@ import { RATES, type ReadAloud, type SleepMode } from '@/composables/useReadAlou
 import { QUALITY_LABEL, openVoiceInstaller, rawSpanishVoices, voiceHelp } from '@/services/speech'
 import {
   NEURAL_PREFIX,
+  diagnoseNeural,
   downloadNeuralVoice,
+  unlockNeuralAudio,
   isMobile,
   neuralCapable,
   neuralKey,
@@ -81,7 +83,33 @@ function removeNeural(id: string, label: string) {
   })
 }
 
-const isApple = /iPhone|iPad|iPod|Macintosh/.test(navigator.userAgent)
+// ---------- Prueba de la voz neuronal (para ver dónde se atasca en un móvil) ----------
+const diagOpen = ref(false)
+const diagVoice = ref('')
+const diagLines = ref<string[]>([])
+const diagRunning = ref(false)
+const diagElapsed = ref(0)
+
+async function runDiagnosis(id: string, label: string) {
+  // Dentro del toque: el iPhone solo deja sonar el audio si se "desbloquea" aquí
+  unlockNeuralAudio()
+  props.ra.pause()
+  diagVoice.value = label
+  diagLines.value = []
+  diagOpen.value = true
+  diagRunning.value = true
+  const start = Date.now()
+  diagElapsed.value = 0
+  const tick = setInterval(() => (diagElapsed.value = Math.round((Date.now() - start) / 1000)), 1000)
+  try {
+    await diagnoseNeural(id, (line) => diagLines.value.push(line))
+  } finally {
+    clearInterval(tick)
+    diagRunning.value = false
+  }
+}
+
+const isApple =/iPhone|iPad|iPod|Macintosh/.test(navigator.userAgent)
 const rawVoices = ref<string[]>([])
 function loadRaw() {
   rawVoices.value = rawSpanishVoices()
@@ -159,15 +187,26 @@ function rateLabel(r: number) {
                 <q-item-label caption>{{ v.detail }}</q-item-label>
               </q-item-section>
               <q-item-section v-if="v.neural" side>
-                <q-btn
-                  flat
-                  round
-                  dense
-                  size="sm"
-                  icon="delete_outline"
-                  :aria-label="`Borrar la voz ${v.label}`"
-                  @click.stop="removeNeural(v.id, v.label)"
-                />
+                <div class="row no-wrap">
+                  <q-btn
+                    flat
+                    round
+                    dense
+                    size="sm"
+                    icon="troubleshoot"
+                    :aria-label="`Probar la voz ${v.label}`"
+                    @click.stop="runDiagnosis(v.id, v.label)"
+                  />
+                  <q-btn
+                    flat
+                    round
+                    dense
+                    size="sm"
+                    icon="delete_outline"
+                    :aria-label="`Borrar la voz ${v.label}`"
+                    @click.stop="removeNeural(v.id, v.label)"
+                  />
+                </div>
               </q-item-section>
             </q-item>
 
@@ -327,10 +366,34 @@ function rateLabel(r: number) {
         <q-tooltip>Dejar de escuchar</q-tooltip>
       </q-btn>
     </div>
+    <q-dialog v-model="diagOpen">
+      <q-card class="diag-card">
+        <q-card-section class="text-h6 q-pb-xs">Prueba: {{ diagVoice }}</q-card-section>
+        <q-card-section class="diag-log q-pt-xs">
+          <div v-for="(line, i) in diagLines" :key="i">{{ line }}</div>
+          <div v-if="diagRunning" class="row items-center q-mt-xs">
+            <q-spinner-dots color="accent" size="20px" />
+            <span class="q-ml-sm">{{ diagElapsed }} s</span>
+          </div>
+        </q-card-section>
+        <q-card-section class="text-caption q-pt-none">Haz una captura de esta pantalla para saber dónde se atasca.</q-card-section>
+        <q-card-actions align="right"><q-btn v-close-popup flat label="Cerrar" /></q-card-actions>
+      </q-card>
+    </q-dialog>
   </div>
 </template>
 
 <style scoped>
+.diag-card {
+  width: 420px;
+  max-width: 94vw;
+}
+.diag-log {
+  font-family: ui-monospace, monospace;
+  font-size: 0.78rem;
+  line-height: 1.5;
+  word-break: break-word;
+}
 .raw-voices {
   font-family: ui-monospace, monospace;
   font-size: 0.7rem;

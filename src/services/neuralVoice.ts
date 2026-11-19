@@ -87,7 +87,12 @@ export const neuralKey = (id: string) => id.slice(NEURAL_PREFIX.length)
 
 let worker: Worker | null = null
 let nextId = 1
-const pending = new Map<number, { resolve(v: unknown): void; reject(e: Error): void; progress?(f: number): void }>()
+const pending = new Map<
+  number,
+  { resolve(v: unknown): void; reject(e: Error): void; progress?(f: number): void; log?(s: string): void }
+>()
+/** Quien está escuchando el diagnóstico (también recibe los errores sueltos del worker). */
+let diagLog: ((s: string) => void) | null = null
 
 function failAll(message: string) {
   for (const req of pending.values()) req.reject(new Error(message))
@@ -96,7 +101,7 @@ function failAll(message: string) {
   worker = null
 }
 
-function call<T>(msg: Record<string, unknown>, progress?: (f: number) => void): Promise<T> {
+function call<T>(msg: Record<string, unknown>, progress?: (f: number) => void, log?: (s: string) => void): Promise<T> {
   if (!worker) {
     try {
       worker = new Worker(new URL('../workers/piper.worker.ts', import.meta.url), { type: 'module' })
@@ -104,12 +109,17 @@ function call<T>(msg: Record<string, unknown>, progress?: (f: number) => void): 
       return Promise.reject(err)
     }
     // Si el worker no puede arrancar (navegador antiguo), que nada se quede esperando para siempre
-    worker.onerror = () => failAll('worker')
+    worker.onerror = (e) => {
+      diagLog?.(`Error del motor: ${e.message || 'el hilo de la voz se cerró'}`)
+      failAll('worker')
+    }
     worker.onmessageerror = () => failAll('worker')
     worker.onmessage = (e: MessageEvent) => {
-      const { id, result, error, progress: p } = e.data
+      const { id, result, error, progress: p, log: line } = e.data
+      if (line != null && id === -1) return diagLog?.(line)
       const req = pending.get(id)
       if (!req) return
+      if (line != null) return req.log?.(line)
       if (p != null) return req.progress?.(p)
       pending.delete(id)
       if (error) req.reject(new Error(error))
@@ -118,7 +128,7 @@ function call<T>(msg: Record<string, unknown>, progress?: (f: number) => void): 
   }
   const id = nextId++
   return new Promise<T>((resolve, reject) => {
-    pending.set(id, { resolve: resolve as (v: unknown) => void, reject, progress })
+    pending.set(id, { resolve: resolve as (v: unknown) => void, reject, progress, log })
     worker!.postMessage({ id, ...msg })
   })
 }
@@ -218,6 +228,28 @@ export async function speakNeural(text: string, voiceId: string, rate: number): 
   } finally {
     finishCurrent = null
     URL.revokeObjectURL(url)
+  }
+}
+
+/**
+ * Prueba completa (cargar, generar y reproducir una frase) contando cada paso.
+ * Llamar a unlockNeuralAudio() antes, dentro del toque, para que el iPhone deje sonar el resultado.
+ */
+export async function diagnoseNeural(voiceId: string, log: (s: string) => void) {
+  const text = 'Hola, soy la voz neuronal de Bibli. ¿Me oyes bien?'
+  const key = neuralKey(voiceId)
+  diagLog = log
+  try {
+    const buf = await call<ArrayBuffer>({ type: 'diagnose', voice: key, text }, undefined, log)
+    cache.set(`${key}\n${text}`, Promise.resolve(new Blob([buf], { type: 'audio/wav' })))
+    log('Reproduciendo…')
+    const t = performance.now()
+    await speakNeural(text, voiceId, 1)
+    log(`✅ Sonó entera (${((performance.now() - t) / 1000).toFixed(1)} s)`)
+  } catch (err) {
+    log(`❌ ${err instanceof Error ? err.message : String(err)}`)
+  } finally {
+    diagLog = null
   }
 }
 

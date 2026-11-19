@@ -37,11 +37,6 @@ interface Standing {
   /** Diseño del lomo: filetes dorados, etiqueta, nervios de cuero o franja superior. */
   variant: number
 }
-interface Stack {
-  type: 'stack'
-  key: string
-  books: { book: Book; len: number; thick: number; shift: number }[]
-}
 
 /** "Brandon Sanderson" → "Sanderson" */
 const surname = (a: string) => a.trim().split(/\s+/).at(-1) ?? ''
@@ -54,33 +49,24 @@ function fitsAuthor(b: Book, h: number) {
   return b.title.length * 7.6 + name.length * 6.8 + 14 <= usable
 }
 
-/** Cada 7 libros, los 2 últimos van tumbados uno encima del otro (con 4–6 libros, los 2 últimos). */
-const items = computed<(Standing | Stack)[]>(() => {
-  const list = props.books
-  const out: (Standing | Stack)[] = []
-  const stacked = (i: number) => {
-    if (list.length >= 4 && list.length < 7) return i >= list.length - 2
-    const group = Math.floor(i / 7)
-    const full = (group + 1) * 7 <= list.length
-    return full && i % 7 >= 5
-  }
-  for (let i = 0; i < list.length; i++) {
-    const b = list[i]
+/** Todos los libros de pie, cada uno con su grosor, alto y diseño de lomo. */
+const items = computed<Standing[]>(() =>
+  props.books.map((b) => {
     const s = seed(b)
-    if (stacked(i)) {
-      const last = out[out.length - 1]
-      const entry = { book: b, len: 128 + (s % 34), thick: 22 + ((s >> 5) % 8), shift: ((s >> 9) % 14) - 7 }
-      if (last?.type === 'stack') last.books.push(entry)
-      else out.push({ type: 'stack', key: `stack-${b.id}`, books: [entry] })
-    } else {
-      // Los títulos largos, en libros algo más gruesos (como en la vida real)
-      const w = 29 + (s % 13) + Math.min(10, Math.round(b.title.length / 4))
-      const h = 172 + ((s >> 4) % 42)
-      out.push({ type: 'standing', key: `b-${b.id}`, book: b, w, h, showAuthor: fitsAuthor(b, h), variant: (s >> 11) % 4 })
+    // Los títulos largos, en libros algo más gruesos (como en la vida real)
+    const w = 29 + (s % 13) + Math.min(10, Math.round(b.title.length / 4))
+    const h = 172 + ((s >> 4) % 42)
+    return {
+      type: 'standing' as const,
+      key: `b-${b.id}`,
+      book: b,
+      w,
+      h,
+      showAuthor: fitsAuthor(b, h),
+      variant: (s >> 11) % 4,
     }
-  }
-  return out
-})
+  }),
+)
 
 // ---------- Color de cada lomo (de su portada) ----------
 const colors = reactive<Record<number, SpineColor>>({})
@@ -109,7 +95,7 @@ useSortableBooks(caseEl, '.slot--standing', (ids) => emit('reorder', ids))
     <div class="cornice" aria-hidden="true" />
     <div ref="caseEl" class="shelves">
       <template v-for="item in items" :key="item.key">
-        <div v-if="item.type === 'standing'" class="slot slot--standing" :data-id="item.book.id">
+        <div class="slot slot--standing" :data-id="item.book.id">
           <button
             class="spine"
             :class="[`spine--v${item.variant}`, { 'spine--done': finished(item.book) }]"
@@ -130,31 +116,6 @@ useSortableBooks(caseEl, '.slot--standing', (ids) => emit('reorder', ids))
               @edit="emit('edit', item.book)"
               @shelves="emit('shelves', item.book)"
               @remove="emit('remove', item.book)"
-            />
-          </button>
-        </div>
-        <div v-else class="slot slot--stack">
-          <button
-            v-for="entry in item.books"
-            :key="entry.book.id"
-            class="lying"
-            :data-id="entry.book.id"
-            :style="{
-              '--len': `${entry.len}px`,
-              '--thick': `${entry.thick}px`,
-              '--shift': `${entry.shift}px`,
-              '--c': colors[entry.book.id]?.bg,
-              '--fg': colors[entry.book.id]?.fg,
-            }"
-            :aria-label="entry.book.title"
-          >
-            <span class="lying__title font-display">{{ entry.book.title }}</span>
-            <BookPeekMenu
-              :book="entry.book"
-              @open="emit('open', entry.book)"
-              @edit="emit('edit', entry.book)"
-              @shelves="emit('shelves', entry.book)"
-              @remove="emit('remove', entry.book)"
             />
           </button>
         </div>
@@ -190,11 +151,11 @@ useSortableBooks(caseEl, '.slot--standing', (ids) => emit('reorder', ids))
     rgba(0, 0, 0, 0.04) 15px 18px,
     transparent 18px 29px
   );
-  /* Tan ancho como los libros (hasta llenar la pantalla y pasar a otra balda), centrado */
+  /* Tan ancho como los libros (hasta llenar la pantalla y pasar a otra balda), con un mínimo */
   width: fit-content;
   max-width: 100%;
-  min-width: min(100%, 300px);
-  margin: 6px auto 0;
+  min-width: min(100%, 320px);
+  margin: 6px 0 0;
   filter: drop-shadow(0 22px 22px rgba(30, 14, 4, 0.45));
 }
 .cornice {
@@ -272,6 +233,16 @@ useSortableBooks(caseEl, '.slot--standing', (ids) => emit('reorder', ids))
 .foot:last-child {
   right: 14px;
 }
+/* Pantallas grandes: libros más grandes y un mueble que no se pierda en tanto espacio */
+@media (min-width: 1024px) {
+  .bookcase {
+    --row: 296px;
+    --plank: 20px;
+    --side: 18px;
+    --s: 1.2;
+    min-width: min(100%, 720px);
+  }
+}
 @media (max-width: 599px) {
   .bookcase {
     --row: 214px;
@@ -293,12 +264,6 @@ useSortableBooks(caseEl, '.slot--standing', (ids) => emit('reorder', ids))
 }
 .slot--standing {
   margin-right: 2px;
-}
-.slot--stack {
-  flex-direction: column;
-  justify-content: flex-end;
-  align-items: center;
-  margin: 0 6px 0 4px;
 }
 
 /* ---------- Decoración ---------- */
@@ -332,6 +297,9 @@ useSortableBooks(caseEl, '.slot--standing', (ids) => emit('reorder', ids))
 }
 .plant {
   flex-shrink: 0;
+  /* Al otro extremo de la balda: rellena el hueco cuando hay pocos libros */
+  margin-left: auto;
+  margin-right: 6px;
   font-size: calc(54px * var(--s));
   line-height: 1;
   margin-bottom: -4px;
@@ -493,47 +461,6 @@ useSortableBooks(caseEl, '.slot--standing', (ids) => emit('reorder', ids))
 .spine--done .spine__title::before {
   content: '★ ';
   color: #f2c45a;
-}
-
-/* ---------- Libros tumbados ---------- */
-.lying {
-  position: relative;
-  width: calc(var(--len) * var(--s));
-  height: calc(var(--thick) * var(--s));
-  transform: translateX(var(--shift));
-  border: 0;
-  border-radius: 2px 4px 4px 2px;
-  background: var(--c, #6b4123);
-  color: var(--fg, #f6ead8);
-  padding: 0 10px;
-  display: flex;
-  align-items: center;
-  cursor: pointer;
-  box-shadow:
-    inset 0 0 0 1px rgba(0, 0, 0, 0.25),
-    0 2px 3px rgba(0, 0, 0, 0.35);
-  transition: transform 0.25s cubic-bezier(0.3, 1.4, 0.5, 1);
-}
-.lying::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.16), transparent 45%, rgba(0, 0, 0, 0.3));
-  pointer-events: none;
-}
-.lying:hover,
-.lying:focus-visible {
-  transform: translateX(calc(var(--shift) + 10px));
-  outline: none;
-}
-.lying__title {
-  position: relative;
-  font-size: calc(11px * var(--s));
-  font-weight: 700;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 /* Mientras se arrastra */

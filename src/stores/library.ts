@@ -5,8 +5,9 @@ import { db, type Book } from '@/db'
 import { detectFormat, extractMetadata, sha256 } from '@/services/metadata'
 import { epubToUtf8 } from '@/services/epubEncoding'
 import { FINISHED_THRESHOLD } from '@/services/stats'
+import { completeLibraryInfo } from '@/services/bookInfo'
 
-export type SortKey = 'custom' | 'title' | 'author' | 'addedAt' | 'lastOpenedAt'
+export type SortKey = 'custom' | 'series' | 'title' | 'author' | 'addedAt' | 'lastOpenedAt'
 /** spines: lomos en una estantería de madera · grid: portadas · list: lista */
 export type ViewMode = 'spines' | 'grid' | 'list'
 export type StatusFilter = 'reading' | 'unread' | 'finished'
@@ -42,6 +43,8 @@ export const useLibraryStore = defineStore('library', () => {
   liveQuery(() => db.books.toArray()).subscribe({
     next: (rows) => {
       books.value = rows
+      // La primera vez: completar en segundo plano los datos que falten (saga, autor, portada)
+      if (!loaded.value) setTimeout(() => completeLibraryInfo(), 4000)
       loaded.value = true
     },
     error: (err) => console.error(err),
@@ -65,6 +68,16 @@ export const useLibraryStore = defineStore('library', () => {
         case 'custom':
           // Los que nunca se movieron, después y por fecha de llegada
           return (a.order ?? 1e9 + a.addedAt / 1e6) - (b.order ?? 1e9 + b.addedAt / 1e6)
+        case 'series': {
+          // Cada saga junta y en orden; los libros sueltos, por su título, entre medias
+          const ka = a.series || a.title
+          const kb = b.series || b.title
+          return (
+            collator.compare(ka, kb) ||
+            (a.seriesIndex ?? 999) - (b.seriesIndex ?? 999) ||
+            collator.compare(a.title, b.title)
+          )
+        }
         case 'title':
           return collator.compare(a.title, b.title)
         case 'author':
@@ -141,10 +154,14 @@ export const useLibraryStore = defineStore('library', () => {
       })
       result.added++
     }
+    if (result.added) setTimeout(() => completeLibraryInfo(), 1500)
     return result
   }
 
-  async function updateBook(id: number, changes: Partial<Pick<Book, 'title' | 'author' | 'tags'>>) {
+  async function updateBook(
+    id: number,
+    changes: Partial<Pick<Book, 'title' | 'author' | 'tags' | 'series' | 'seriesIndex'>>,
+  ) {
     await db.books.update(id, changes)
     if (tagFilter.value && !allTags.value.includes(tagFilter.value)) tagFilter.value = null
   }

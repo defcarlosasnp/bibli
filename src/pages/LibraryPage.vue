@@ -83,6 +83,7 @@ useSortableBooks(listEl, '.q-item', (ids) => library.setVisibleOrder(ids))
 
 const sortOptions: { value: SortKey; label: string; icon: string }[] = [
   { value: 'custom', label: 'Mi orden (arrastrando)', icon: 'drag_indicator' },
+  { value: 'series', label: 'Por saga', icon: 'auto_stories' },
   { value: 'title', label: 'Título', icon: 'sort_by_alpha' },
   { value: 'author', label: 'Autor', icon: 'person' },
   { value: 'addedAt', label: 'Recién añadidos', icon: 'schedule' },
@@ -141,9 +142,14 @@ function openBook(book: Book) {
 function editBook(book: Book) {
   $q.dialog({
     component: BookEditDialog,
-    componentProps: { book, allTags: allTags.value },
-  }).onOk((changes: Pick<Book, 'title' | 'author' | 'tags'>) => library.updateBook(book.id, changes))
+    componentProps: { book, allTags: allTags.value, allSeries: allSeries.value },
+  }).onOk((changes: Pick<Book, 'title' | 'author' | 'tags' | 'series' | 'seriesIndex'>) =>
+    library.updateBook(book.id, changes),
+  )
 }
+
+/** Sagas que ya hay, para sugerirlas al editar un libro. */
+const allSeries = computed(() => [...new Set(books.value.map((b) => b.series).filter((x): x is string => !!x))].sort())
 
 function openBackup() {
   $q.dialog({ component: BackupDialog })

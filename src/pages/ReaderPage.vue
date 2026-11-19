@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowRef, nextTick, toRaw, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { formatRemaining, paceVersion, recordPace, secondsPer } from '@/services/pace'
 import { useQuasar } from 'quasar'
 import { liveQuery } from 'dexie'
 import ePub, { EpubCFI, type Book as EpubBook, type Rendition, type NavItem } from 'epubjs'
@@ -316,6 +317,7 @@ const sliderLabel = computed(() =>
 
 function onSliderChange(v: number | null) {
   sliderDrag.value = null
+  lastTurnAt = Date.now()
   if (v == null) return
   if (book.value?.format === 'pdf') goToPdfPage(v)
   else if (epub.value && epubLocationsReady.value) {
@@ -381,6 +383,7 @@ async function initEpub(data: ArrayBuffer, meta: Book) {
   watchEpubSelection(rendition.value)
   rendition.value.on('relocated', (loc: { start: { cfi: string; href: string } }) => {
     markActivity()
+    updateEpubRemaining(loc as unknown as EpubRelocation, locationsReady)
     const cfi = loc.start.cfi
     const pct = percentAt(cfi)
     if (pct != null) epubPercent.value = pct
@@ -400,6 +403,7 @@ async function initEpub(data: ArrayBuffer, meta: Book) {
   epubLocationsReady.value = true
   const current = rendition.value.currentLocation() as unknown as { start?: { cfi: string; href: string } }
   if (current?.start) {
+    updateEpubRemaining(current as unknown as EpubRelocation, true)
     const pct = percentAt(current.start.cfi)
     epubPercent.value = pct
     currentLabel.value = epubLabel(current.start.href, pct)
@@ -1231,6 +1235,7 @@ function removeBookmark(bm: Bookmark) {
 }
 
 function goTo(position: string) {
+  lastTurnAt = Date.now()
   if (book.value?.format === 'pdf') goToPdfPage(Number(position))
   else rendition.value?.display(position).then(() => readAloud.jump())
   if (!$q.screen.gt.sm) drawer.value = false
@@ -1248,11 +1253,86 @@ function setTheme(id: ReaderTheme) {
   rendition.value?.themes.select(id)
 }
 
+// ---------- Tiempo restante (a tu ritmo) ----------
+
+/** Cuándo se pasó página por última vez a mano (para medir el ritmo). */
+let lastTurnAt = 0
+/** EPUB: segundos de la última página pasada a mano, que se apuntan al llegar a la nueva posición. */
+let pendingEpubTurn: number | null = null
+let lastLocIndex: number | null = null
+const epubAcc = { sec: 0, locs: 0 }
+/** EPUB: pantallas que quedan en el capítulo y ubicaciones (~1600 letras) que quedan en el libro. */
+const epubScreensLeft = ref<number | null>(null)
+const epubLocsLeft = ref<number | null>(null)
+
+/** Segundos desde la página anterior, o null si no cuenta (primera, o está leyendo la voz). */
+function turnSeconds(): number | null {
+  const now = Date.now()
+  const before = lastTurnAt
+  lastTurnAt = now
+  if (!before || readAloud.playing) return null
+  return (now - before) / 1000
+}
+
+interface EpubRelocation {
+  start: { cfi: string; displayed?: { page: number; total: number } }
+}
+
+function updateEpubRemaining(loc: EpubRelocation, locationsReady: boolean) {
+  const shown = loc.start.displayed
+  epubScreensLeft.value = shown ? Math.max(0, shown.total - shown.page) : null
+  if (!locationsReady || !epub.value) return
+  const total = epub.value.locations.length()
+  const index = epub.value.locations.locationFromCfi(loc.start.cfi) as unknown as number
+  if (!(index >= 0) || !total) return
+  epubLocsLeft.value = Math.max(0, total - index)
+  const dt = pendingEpubTurn
+  pendingEpubTurn = null
+  if (dt != null) {
+    recordPace('epubScreen', dt)
+    // Las ubicaciones avanzan de 0 en 1 por pantalla: se mide en tandas para no exagerar
+    const moved = lastLocIndex != null ? index - lastLocIndex : 0
+    if (moved >= 0 && moved < 20) {
+      epubAcc.sec += dt
+      epubAcc.locs += moved
+      if (epubAcc.locs >= 3) {
+        recordPace('epubLoc', epubAcc.sec, epubAcc.locs)
+        epubAcc.sec = 0
+        epubAcc.locs = 0
+      }
+    }
+  }
+  lastLocIndex = index
+}
+
+const etaText = computed(() => {
+  void paceVersion.value
+  const parts: string[] = []
+  if (book.value?.format === 'pdf') {
+    if (!pageCount.value) return ''
+    const left = pageCount.value - page.value
+    if (!left) return 'Última página'
+    parts.push(`${formatRemaining(left * secondsPer('pdfPage'))} de libro`)
+  } else {
+    if (epubScreensLeft.value === 0) parts.push('fin del capítulo')
+    else if (epubScreensLeft.value != null)
+      parts.push(`${formatRemaining(epubScreensLeft.value * secondsPer('epubScreen'))} de capítulo`)
+    if (epubLocsLeft.value) parts.push(`${formatRemaining(epubLocsLeft.value * secondsPer('epubLoc'))} de libro`)
+  }
+  if (!parts.length) return ''
+  // "Te quedan 8 min de capítulo · 5 h de libro"; en la última pantalla: "Fin del capítulo · 5 h de libro"
+  if (parts[0] === 'fin del capítulo') return ['Fin del capítulo', ...parts.slice(1)].join(' · ')
+  return `Te quedan ${parts.join(' · ')}`
+})
+
 function next() {
+  const dt = turnSeconds()
   if (book.value?.format === 'pdf') {
     if (page.value >= pageCount.value) return
+    if (dt) recordPace('pdfPage', dt)
     goToPdfPage(page.value + 1)
   } else {
+    pendingEpubTurn = dt
     rendition.value?.next().then(() => {
       animateTurn(viewport.value, 1)
       readAloud.jump()
@@ -1262,6 +1342,7 @@ function next() {
 }
 
 function prev() {
+  lastTurnAt = Date.now()
   if (book.value?.format === 'pdf') goToPdfPage(page.value - 1)
   else
     rendition.value?.prev().then(() => {
@@ -1498,6 +1579,7 @@ function onSwipe({ direction }: { direction?: string }) {
           :chunk-name="book?.format === 'pdf' ? 'esta página' : 'este capítulo'"
         />
       </transition>
+      <div v-if="etaText && !readAloud.active" class="reader-eta">{{ etaText }}</div>
       <q-toolbar>
         <q-btn flat round icon="chevron_left" @click="prev" />
         <q-btn
@@ -1680,6 +1762,16 @@ function onSwipe({ direction }: { direction?: string }) {
   position: relative;
   background: var(--reader-bg, #fdf9f2);
   transition: background 0.3s;
+}
+/* Tiempo restante, discreto, encima de la barra de abajo */
+.reader-eta {
+  text-align: center;
+  font-size: 0.72rem;
+  line-height: 1;
+  padding-top: 6px;
+  opacity: 0.75;
+  letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums;
 }
 .reader-slider {
   flex: 1;

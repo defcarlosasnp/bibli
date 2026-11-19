@@ -17,6 +17,9 @@ const emit = defineEmits<{ open: []; edit: []; shelves: []; remove: [] }>()
       <div class="peek__info">
         <div class="peek__title font-display">{{ book.title }}</div>
         <div class="peek__author">{{ book.author || 'Autor desconocido' }}</div>
+        <div v-if="book.series" class="peek__series">
+          {{ book.series }}<template v-if="book.seriesIndex"> · nº {{ book.seriesIndex }}</template>
+        </div>
         <div class="peek__meta">
           <q-badge :color="book.format === 'pdf' ? 'red-6' : 'teal-6'" rounded>{{ book.format.toUpperCase() }}</q-badge>
           <span v-if="book.progress >= FINISHED_THRESHOLD">🏆 Leído</span>
@@ -96,6 +99,12 @@ const emit = defineEmits<{ open: []; edit: []; shelves: []; remove: [] }>()
 .peek__author {
   font-size: 0.8rem;
   opacity: 0.7;
+  margin-top: 2px;
+}
+.peek__series {
+  font-size: 0.75rem;
+  color: var(--accent);
+  font-weight: 600;
   margin-top: 2px;
 }
 .peek__meta {

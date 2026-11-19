@@ -3,7 +3,7 @@ import { ref } from 'vue'
 import { useDialogPluginComponent } from 'quasar'
 import type { Book } from '@/db'
 
-const props = defineProps<{ book: Book; allTags: string[] }>()
+const props = withDefaults(defineProps<{ book: Book; allTags: string[]; allSeries?: string[] }>(), { allSeries: () => [] })
 defineEmits([...useDialogPluginComponent.emits])
 
 const { dialogRef, onDialogHide, onDialogOK, onDialogCancel } = useDialogPluginComponent()
@@ -12,6 +12,16 @@ const title = ref(props.book.title)
 const author = ref(props.book.author)
 const tags = ref([...props.book.tags])
 const tagOptions = ref(props.allTags)
+const series = ref(props.book.series ?? '')
+const seriesIndex = ref<string>(props.book.seriesIndex != null ? String(props.book.seriesIndex) : '')
+const seriesOptions = ref(props.allSeries)
+
+function filterSeries(val: string, update: (fn: () => void) => void) {
+  update(() => {
+    const q = val.toLocaleLowerCase('es')
+    seriesOptions.value = props.allSeries.filter((t) => t.toLocaleLowerCase('es').includes(q))
+  })
+}
 
 function filterTags(val: string, update: (fn: () => void) => void) {
   update(() => {
@@ -25,6 +35,8 @@ function save() {
     title: title.value.trim() || props.book.title,
     author: author.value.trim(),
     tags: [...new Set(tags.value.map((t) => t.trim()).filter(Boolean))],
+    series: series.value.trim() || undefined,
+    seriesIndex: series.value.trim() && Number(seriesIndex.value) > 0 ? Number(seriesIndex.value) : undefined,
   })
 }
 </script>
@@ -36,6 +48,23 @@ function save() {
       <q-card-section class="q-gutter-md">
         <q-input v-model="title" label="Título" outlined autofocus />
         <q-input v-model="author" label="Autor" outlined />
+        <div class="row no-wrap q-gutter-sm">
+          <q-select
+            v-model="series"
+            class="col"
+            label="Saga"
+            outlined
+            use-input
+            fill-input
+            hide-selected
+            hide-dropdown-icon
+            input-debounce="0"
+            :options="seriesOptions"
+            @filter="filterSeries"
+            @input-value="(v) => (series = v)"
+          />
+          <q-input v-model="seriesIndex" label="Nº" type="number" min="1" outlined style="width: 82px" :disable="!series.trim()" />
+        </div>
         <q-select
           v-model="tags"
           label="Estanterías"

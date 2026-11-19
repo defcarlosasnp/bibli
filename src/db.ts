@@ -30,6 +30,11 @@ export interface Book {
   bookmarks: Bookmark[]
   /** Posición en "Mi orden" (arrastrando los libros); sin valor, va por fecha de llegada. */
   order?: number
+  /** Saga a la que pertenece ("El archivo de las tormentas") y su número dentro de ella. */
+  series?: string
+  seriesIndex?: number
+  /** Ya se buscaron los datos que faltaban (saga, autor, portada): no se vuelve a buscar. */
+  infoChecked?: boolean
 }
 
 /** El binario va en su propia tabla para no cargarlo al listar la biblioteca. */

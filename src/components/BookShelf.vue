@@ -107,6 +107,7 @@ useSortableBooks(caseEl, '.slot--standing', (ids) => emit('reorder', ids))
             }"
             :aria-label="item.book.title"
           >
+            <span v-if="item.book.seriesIndex" class="spine__num">{{ item.book.seriesIndex }}</span>
             <span class="spine__title font-display">{{ item.book.title }}</span>
             <span v-if="item.showAuthor" class="spine__author">{{ surname(item.book.author) }}</span>
             <span v-if="reading(item.book)" class="spine__ribbon" />
@@ -446,6 +447,21 @@ useSortableBooks(caseEl, '.slot--standing', (ids) => emit('reorder', ids))
 }
 .spine--v3 {
   padding-top: calc(42px * var(--s));
+}
+/* Número dentro de la saga, arriba del lomo */
+.spine__num {
+  position: relative;
+  flex: 0 0 auto;
+  min-width: calc(17px * var(--s));
+  height: calc(17px * var(--s));
+  margin-top: calc(-6px * var(--s));
+  padding: 0 3px;
+  border-radius: 999px;
+  border: 1px solid rgba(232, 190, 110, 0.7);
+  font-size: calc(10px * var(--s));
+  font-weight: 700;
+  line-height: calc(15px * var(--s));
+  text-align: center;
 }
 /* Cinta de punto de lectura asomando por abajo: el libro que vas leyendo */
 .spine__ribbon {

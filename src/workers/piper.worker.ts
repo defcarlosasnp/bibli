@@ -78,7 +78,13 @@ async function ensureRuntime(onBytes?: (n: number) => void) {
 
 async function runtimeUrls() {
   const d = await dir('piper-runtime')
-  const url = async (u: string) => URL.createObjectURL(await (await d.getFileHandle(u.split('/').at(-1)!)).getFile())
+  // El archivo de OPFS no lleva tipo: Safari se niega a compilar un .wasm que no diga "application/wasm"
+  // (y la librería se queda esperando para siempre), así que se etiqueta a mano
+  const url = async (u: string) => {
+    const file = await (await d.getFileHandle(u.split('/').at(-1)!)).getFile()
+    const type = u.endsWith('.wasm') ? 'application/wasm' : 'application/octet-stream'
+    return URL.createObjectURL(new Blob([file], { type }))
+  }
   return {
     // onnxruntime acepta un mapa archivo → URL además de una carpeta
     onnxWasm: { 'ort-wasm-simd.wasm': await url(RUNTIME.ort) } as unknown as string,

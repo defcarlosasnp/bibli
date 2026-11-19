@@ -158,7 +158,15 @@ export async function listVoices(): Promise<Voice[]> {
     all = webVoices.map((v) => toVoice(v, v.voiceURI))
   }
   const spanish = all.filter((v) => v.lang.toLowerCase().startsWith('es'))
-  const system = (spanish.length ? spanish : all).sort(compareVoices)
+  // iPhone repite voces (misma Paulina dos veces): se deja una por nombre e idioma, la de más calidad
+  const seen = new Set<string>()
+  const system = (spanish.length ? spanish : all).sort(compareVoices).filter((v) => {
+    if (native) return true
+    const key = `${v.label}|${v.lang}`.toLowerCase()
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
   // Las voces neuronales descargadas van primero: son las que mejor suenan
   const stored = new Set(await storedNeuralVoices())
   const neural: Voice[] = NEURAL_VOICES.filter((n) => stored.has(n.key)).map((n) => ({

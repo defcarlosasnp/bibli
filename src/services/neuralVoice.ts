@@ -14,8 +14,8 @@ export interface NeuralVoiceInfo {
   detail: string
   lang: string
   sizeMB: number
-  /** Modelo pequeño: la única que se ofrece en el móvil, donde las demás van demasiado lentas. */
-  light?: boolean
+  /** Se ofrece en el móvil (modelos pequeños o medianos; los grandes van demasiado lentos). */
+  mobile?: boolean
 }
 
 export const NEURAL_VOICES: NeuralVoiceInfo[] = [
@@ -25,7 +25,16 @@ export const NEURAL_VOICES: NeuralVoiceInfo[] = [
     detail: 'Español de España · voz masculina, la más rápida (para el móvil)',
     lang: 'es-ES',
     sizeMB: 28,
-    light: true,
+    mobile: true,
+  },
+  {
+    // Mismo modelo que un hombre y una mujer; "#1" es la mujer
+    key: 'es_ES-sharvard-medium#1',
+    label: 'Lucía',
+    detail: 'Español de España · voz femenina',
+    lang: 'es-ES',
+    sizeMB: 77,
+    mobile: true,
   },
   { key: 'es_MX-claude-high', label: 'Mateo', detail: 'Español de México · voz masculina', lang: 'es-MX', sizeMB: 63 },
   { key: 'es_ES-davefx-medium', label: 'David', detail: 'Español de España · voz masculina', lang: 'es-ES', sizeMB: 63 },
@@ -56,7 +65,7 @@ const MOBILE_KEY = 'bibli.neuralMobile'
 export const neuralOnMobile = ref(typeof localStorage !== 'undefined' && localStorage.getItem(MOBILE_KEY) === '1')
 export const neuralSupported = computed(() => neuralCapable && (!isMobile || neuralOnMobile.value))
 /** Voces que se ofrecen en este aparato. */
-export const offeredNeuralVoices = computed(() => (isMobile ? NEURAL_VOICES.filter((n) => n.light) : NEURAL_VOICES))
+export const offeredNeuralVoices = computed(() => (isMobile ? NEURAL_VOICES.filter((n) => n.mobile) : NEURAL_VOICES))
 
 export async function setNeuralOnMobile(on: boolean) {
   neuralOnMobile.value = on
@@ -82,6 +91,8 @@ export async function freeNeuralStorageOnMobile() {
 
 export const isNeuralVoice =(id: string | null | undefined): id is string => !!id?.startsWith(NEURAL_PREFIX)
 export const neuralKey = (id: string) => id.slice(NEURAL_PREFIX.length)
+/** Archivo de modelo de una voz ("es_ES-sharvard-medium#1" → "es_ES-sharvard-medium"). */
+export const neuralModel = (key: string) => key.split('#')[0]
 
 // ---------- Worker ----------
 

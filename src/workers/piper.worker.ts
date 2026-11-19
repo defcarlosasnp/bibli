@@ -184,7 +184,10 @@ self.addEventListener('unhandledrejection', (e) => self.postMessage({ id: -1, lo
 let queue: Promise<unknown> = Promise.resolve()
 
 self.onmessage = (e: MessageEvent) => {
-  const { id, type, voice, text } = e.data as { id: number; type: string; voice: string; text: string }
+  const { id, type, voice: fullVoice, text } = e.data as { id: number; type: string; voice: string; text: string }
+  // "modelo#hablante" (p. ej. "es_ES-sharvard-medium#1", la voz femenina): un modelo, varias voces
+  const [voice, speaker] = (fullVoice ?? '').split('#')
+  const useSpeaker = () => ((globalThis as { __bibliPiperSpeaker?: number }).__bibliPiperSpeaker = Number(speaker) || 0)
   const reply = (data: object, transfer: Transferable[] = []) => self.postMessage({ id, ...data }, transfer)
   const task = async () => {
     try {
@@ -202,9 +205,11 @@ self.onmessage = (e: MessageEvent) => {
         })
         reply({ result: true })
       } else if (type === 'synth') {
+        useSpeaker()
         const wav = await synth(voice, text)
         reply({ result: wav }, [wav])
       } else if (type === 'diagnose') {
+        useSpeaker()
         const wav = await diagnose(voice, text, (log) => reply({ log }))
         reply({ result: wav }, [wav])
       }

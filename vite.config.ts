@@ -30,6 +30,28 @@ function serviceWorker(): Plugin {
   }
 }
 
+/**
+ * Dos arreglos a la librería de voz neuronal (piper-tts-web 1.0.5) al compilar:
+ * - Elegir el hablante en modelos con varios (p. ej. la voz femenina de "sharvard"); trae fijo el 0.
+ * - Un aviso del motor de pronunciación lanzaba un error que nadie recogía y la frase se quedaba
+ *   esperando para siempre (pasaba en el iPhone): ahora solo se anota.
+ */
+function piperPatch(): Plugin {
+  return {
+    name: 'bibli-piper-patch',
+    transform(code, id) {
+      if (!id.includes('piper-tts-web') || !code.includes('const speakerId = 0;')) return
+      const patched = code
+        .replace('const speakerId = 0;', 'const speakerId = globalThis.__bibliPiperSpeaker ?? 0;')
+        .replace(/printErr: \(message\) => \{\s*throw new Error\(message\);\s*\}/, 'printErr: (message) => { console.warn("piper:", message); }')
+      if (!patched.includes('__bibliPiperSpeaker') || patched.includes('throw new Error(message)')) {
+        this.error('piper-tts-web cambió: revisa piperPatch en vite.config.ts')
+      }
+      return { code: patched, map: null }
+    },
+  }
+}
+
 export default defineConfig({
   // Rutas relativas: funciona igual en Capacitor, en GitHub Pages (/bibli/) y en cualquier hosting.
   base: './',
@@ -42,5 +64,7 @@ export default defineConfig({
     alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) },
   },
   // El worker de la voz neuronal carga partes del motor bajo demanda (import dinámico)
-  worker: { format: 'es' },
+  worker: { format: 'es', plugins: () => [piperPatch()] },
+  // Sin pre-empaquetar, para que el parche también se aplique con `npm run dev`
+  optimizeDeps: { exclude: ['@mintplex-labs/piper-tts-web'] },
 })

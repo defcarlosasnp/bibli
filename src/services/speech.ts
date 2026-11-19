@@ -4,6 +4,7 @@ import {
   NEURAL_PREFIX,
   NEURAL_VOICES,
   isNeuralVoice,
+  neuralModel,
   prefetchNeural,
   resetNeuralWorker,
   speakNeural,
@@ -179,7 +180,7 @@ export async function listVoices(): Promise<Voice[]> {
   })
   // Las voces neuronales descargadas van primero: son las que mejor suenan
   const stored = new Set(await storedNeuralVoices())
-  const neural: Voice[] = NEURAL_VOICES.filter((n) => stored.has(n.key)).map((n) => ({
+  const neural: Voice[] = NEURAL_VOICES.filter((n) => stored.has(neuralModel(n.key))).map((n) => ({
     id: NEURAL_PREFIX + n.key,
     label: n.label,
     detail: `${n.detail} · sin internet`,

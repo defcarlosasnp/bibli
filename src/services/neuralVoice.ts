@@ -3,6 +3,8 @@
  * descargadas, funcionan sin internet. El audio se genera en un Worker (src/workers/piper.worker.ts).
  */
 
+import { computed, ref } from 'vue'
+
 export const NEURAL_PREFIX = 'piper:'
 
 export interface NeuralVoiceInfo {
@@ -12,9 +14,19 @@ export interface NeuralVoiceInfo {
   detail: string
   lang: string
   sizeMB: number
+  /** Modelo pequeño: la única que se ofrece en el móvil, donde las demás van demasiado lentas. */
+  light?: boolean
 }
 
 export const NEURAL_VOICES: NeuralVoiceInfo[] = [
+  {
+    key: 'es_ES-carlfm-x_low',
+    label: 'Carlos (ligera)',
+    detail: 'Español de España · voz masculina, la más rápida (para el móvil)',
+    lang: 'es-ES',
+    sizeMB: 28,
+    light: true,
+  },
   { key: 'es_MX-claude-high', label: 'Mateo', detail: 'Español de México · voz masculina', lang: 'es-MX', sizeMB: 63 },
   { key: 'es_ES-davefx-medium', label: 'David', detail: 'Español de España · voz masculina', lang: 'es-ES', sizeMB: 63 },
   { key: 'es_MX-ald-medium', label: 'Álex', detail: 'Español de México · voz masculina', lang: 'es-MX', sizeMB: 63 },
@@ -22,26 +34,44 @@ export const NEURAL_VOICES: NeuralVoiceInfo[] = [
 ]
 
 /**
- * En el navegador del móvil (y dentro del APK) la voz se genera mucho más lento que en tiempo real:
- * medido en Android, 26 s para 12 s de audio con la voz buena y casi 1:1 con la más ligera, así que
- * nunca llegaba a sonar. Solo se ofrece en ordenadores.
+ * En el móvil la voz se genera más despacio: en el emulador de Android, 26 s para 12 s de audio con la
+ * voz buena y casi 1:1 con la ligera. Un teléfono real suele ir más rápido que el emulador, así que en
+ * el móvil se puede activar como experimento, solo con la voz ligera.
  */
-const isMobile =
+export const isMobile =
   typeof navigator !== 'undefined' &&
   (/Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) ||
     (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1))
 
-export const neuralSupported =
-  !isMobile &&
+/** El navegador tiene lo necesario (Worker, WebAssembly y almacenamiento de archivos). */
+export const neuralCapable =
   typeof Worker !== 'undefined' &&
   typeof WebAssembly === 'object' &&
   typeof navigator !== 'undefined' &&
   !!navigator.storage &&
   'getDirectory' in navigator.storage
 
-/** En el móvil, borra las voces que se hubieran descargado antes (~90 MB que ya no sirven). */
+const MOBILE_KEY = 'bibli.neuralMobile'
+/** Experimento activado en este móvil. */
+export const neuralOnMobile = ref(typeof localStorage !== 'undefined' && localStorage.getItem(MOBILE_KEY) === '1')
+export const neuralSupported = computed(() => neuralCapable && (!isMobile || neuralOnMobile.value))
+/** Voces que se ofrecen en este aparato. */
+export const offeredNeuralVoices = computed(() => (isMobile ? NEURAL_VOICES.filter((n) => n.light) : NEURAL_VOICES))
+
+export async function setNeuralOnMobile(on: boolean) {
+  neuralOnMobile.value = on
+  localStorage.setItem(MOBILE_KEY, on ? '1' : '0')
+  if (!on) {
+    cache.clear()
+    worker?.terminate()
+    worker = null
+    await freeNeuralStorageOnMobile()
+  }
+}
+
+/** En el móvil sin el experimento, borra las voces que se hubieran descargado antes. */
 export async function freeNeuralStorageOnMobile() {
-  if (!isMobile || !navigator.storage?.getDirectory) return
+  if (!isMobile || neuralOnMobile.value || !navigator.storage?.getDirectory) return
   try {
     const root = await navigator.storage.getDirectory()
     for (const name of ['piper', 'piper-runtime']) await root.removeEntry(name, { recursive: true }).catch(() => undefined)
@@ -94,7 +124,7 @@ function call<T>(msg: Record<string, unknown>, progress?: (f: number) => void): 
 }
 
 export async function storedNeuralVoices(): Promise<string[]> {
-  if (!neuralSupported) return []
+  if (!neuralSupported.value) return []
   // Nunca debe retrasar el ▶: si tarda, se sigue sin voces neuronales
   const timeout = new Promise<string[]>((resolve) => setTimeout(() => resolve([]), 3000))
   return Promise.race([call<string[]>({ type: 'stored' }).catch(() => []), timeout])

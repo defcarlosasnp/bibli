@@ -5,11 +5,14 @@ import { RATES, type ReadAloud, type SleepMode } from '@/composables/useReadAlou
 import { QUALITY_LABEL, openVoiceInstaller, rawSpanishVoices, voiceHelp } from '@/services/speech'
 import {
   NEURAL_PREFIX,
-  NEURAL_VOICES,
   downloadNeuralVoice,
+  isMobile,
+  neuralCapable,
   neuralKey,
   neuralSupported,
+  offeredNeuralVoices,
   removeNeuralVoice,
+  setNeuralOnMobile,
   type NeuralVoiceInfo,
 } from '@/services/neuralVoice'
 
@@ -40,8 +43,15 @@ const hasGoodVoice = computed(() => props.ra.voices.some((v) => v.quality === 'n
 /** Progreso de cada descarga en curso (0–1). Vive aquí para no perderlo al cerrar el menú. */
 const downloads = reactive<Record<string, number>>({})
 const missingNeural = computed(() =>
-  NEURAL_VOICES.filter((n) => !props.ra.voices.some((v) => v.id === NEURAL_PREFIX + n.key)),
+  offeredNeuralVoices.value.filter((n) => !props.ra.voices.some((v) => v.id === NEURAL_PREFIX + n.key)),
 )
+const neuralOn = computed(() => neuralSupported.value)
+
+async function toggleNeuralMobile(on: boolean) {
+  if (!on && props.ra.voices.some((v) => v.neural && v.id === props.ra.voiceId)) props.ra.setVoice(null)
+  await setNeuralOnMobile(on)
+  await props.ra.refreshVoices()
+}
 
 async function download(n: NeuralVoiceInfo) {
   if (n.key in downloads) return
@@ -61,7 +71,7 @@ async function download(n: NeuralVoiceInfo) {
 function removeNeural(id: string, label: string) {
   $q.dialog({
     title: `¿Borrar la voz «${label}»?`,
-    message: 'Liberarás unos 63 MB. Podrás volver a descargarla cuando quieras.',
+    message: 'Liberarás el espacio que ocupa. Podrás volver a descargarla cuando quieras.',
     cancel: { flat: true, label: 'Cancelar' },
     ok: { color: 'negative', unelevated: true, label: 'Borrar' },
   }).onOk(async () => {
@@ -161,7 +171,24 @@ function rateLabel(r: number) {
               </q-item-section>
             </q-item>
 
-            <template v-if="neuralSupported && missingNeural.length">
+            <template v-if="isMobile && neuralCapable">
+              <q-separator class="q-my-xs" />
+              <q-item tag="label" clickable>
+                <q-item-section avatar><q-icon name="science" color="accent" /></q-item-section>
+                <q-item-section>
+                  <q-item-label>Voz neuronal en el móvil</q-item-label>
+                  <q-item-label caption>
+                    Experimental. Suena mucho mejor, pero puede tardar en arrancar; si va a trompicones,
+                    desactívala (se borra la voz descargada).
+                  </q-item-label>
+                </q-item-section>
+                <q-item-section side>
+                  <q-toggle :model-value="neuralOn" color="accent" @update:model-value="toggleNeuralMobile" />
+                </q-item-section>
+              </q-item>
+            </template>
+
+            <template v-if="neuralOn && missingNeural.length">
               <q-separator class="q-my-xs" />
               <q-item-label header class="neural-header">
                 Voces neuronales de Bibli ✨

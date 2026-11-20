@@ -15,28 +15,9 @@ import {
 } from '@/services/stats'
 import { ACHIEVEMENTS } from '@/services/achievements'
 import LumiOwl from '@/components/LumiOwl.vue'
-import { useQuasar } from 'quasar'
-import { reminderSettings, remindersSupported, setReminder } from '@/services/reminder'
 
 const router = useRouter()
-const $q = useQuasar()
 const thisYear = new Date().getFullYear()
-
-// ---------- Recordatorio diario ----------
-const reminder = ref(reminderSettings())
-async function saveReminder(changes: Partial<typeof reminder.value>) {
-  const next = { ...reminder.value, ...changes }
-  const ok = await setReminder(next)
-  if (!ok && next.on) {
-    $q.notify({ type: 'warning', message: 'Sin permiso para avisos. Actívalo en los ajustes de Android → Apps → Bibli.' })
-    return
-  }
-  reminder.value = next
-  if (changes.on) $q.notify({ message: `Te avisaré a las ${next.time} los días que no hayas leído 🦉`, timeout: 2500 })
-}
-
-const onReminderToggle = (on: boolean) => saveReminder({ on })
-const onReminderTime = (e: Event) => saveReminder({ time: (e.target as HTMLInputElement).value || reminder.value.time })
 
 const days = ref<ReadingDay[]>([])
 const books = ref<Book[]>([])
@@ -197,40 +178,6 @@ const unlockedCount = computed(() => achievements.value.filter((a) => a.unlocked
           </div>
           <div class="chart__labels">
             <span v-for="d in week" :key="d.date" :class="{ strong: d.isToday }">{{ d.label }}</span>
-          </div>
-        </section>
-
-        <!-- Recordatorio diario -->
-        <section class="card">
-          <div class="row items-center no-wrap">
-            <div class="col">
-              <h2 class="font-display q-my-none">🔔 Recordatorio diario</h2>
-              <div class="muted">
-                <template v-if="remindersSupported">
-                  Un aviso suave a la hora que elijas. Si ese día ya leíste, no te molesta.
-                </template>
-                <template v-else>
-                  Disponible en la app de Android. En el navegador no se pueden programar avisos.
-                </template>
-              </div>
-            </div>
-            <q-toggle
-              :model-value="reminder.on"
-              :disable="!remindersSupported"
-              color="accent"
-              @update:model-value="onReminderToggle"
-            />
-          </div>
-          <div v-if="remindersSupported && reminder.on" class="row items-center q-mt-sm q-gutter-sm">
-            <span>Avisarme a las</span>
-            <q-input
-              :model-value="reminder.time"
-              type="time"
-              dense
-              outlined
-              style="width: 120px"
-              @change="onReminderTime"
-            />
           </div>
         </section>
 

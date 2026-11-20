@@ -15,7 +15,6 @@ import BookShelf from '@/components/BookShelf.vue'
 import { pickDailyQuote, type DailyQuote } from '@/services/dailyQuote'
 import { GOAL_CHOICES, finishedInYear, setYearGoal, yearGoal } from '@/services/goals'
 import { useSortableBooks } from '@/composables/useSortableBooks'
-import BackupDialog from '@/components/BackupDialog.vue'
 import { bookStatus, useLibraryStore, type SortKey, type StatusFilter } from '@/stores/library'
 import { FINISHED_THRESHOLD, celebrate, dailyGoalMinutes, dayKey, formatDuration, greeting, streakFrom } from '@/services/stats'
 import { checkAchievements, setAchievementAnnouncer } from '@/services/achievements'
@@ -46,6 +45,7 @@ function openQuote(q: DailyQuote) {
 
 // Reto del año
 const thisYear = new Date().getFullYear()
+const ringSize = computed(() => ($q.screen.lt.sm ? '38px' : '46px'))
 const goal = ref(yearGoal())
 const doneThisYear = computed(() => finishedInYear(books.value, thisYear).length)
 function editGoal() {
@@ -189,10 +189,6 @@ function editBook(book: Book) {
 /** Sagas que ya hay, para sugerirlas al editar un libro. */
 const allSeries = computed(() => [...new Set(books.value.map((b) => b.series).filter((x): x is string => !!x))].sort())
 
-function openBackup() {
-  $q.dialog({ component: BackupDialog })
-}
-
 function editShelves(book: Book) {
   $q.dialog({
     component: ShelvesDialog,
@@ -276,8 +272,8 @@ function removeBook(book: Book) {
             </q-list>
           </q-menu>
         </q-btn>
-        <q-btn flat round icon="cloud_sync" aria-label="Copia de seguridad" @click="openBackup">
-          <q-tooltip>Copia de seguridad</q-tooltip>
+        <q-btn flat round icon="settings" aria-label="Ajustes" @click="router.push({ name: 'settings' })">
+          <q-tooltip>Ajustes y copia de seguridad</q-tooltip>
         </q-btn>
         <q-btn
           v-if="$q.screen.gt.xs"
@@ -326,11 +322,11 @@ function removeBook(book: Book) {
                     <span class="stat__label">{{ s.label }}</span>
                   </div>
                 </div>
-                <div v-if="books.length" class="today">
+                <div v-if="books.length" class="goals">
                   <button class="today__goal" @click="router.push({ name: 'stats' })">
                     <q-circular-progress
                       :value="goalPercent"
-                      size="46px"
+                      :size="ringSize"
                       :thickness="0.22"
                       color="accent"
                       track-color="white"
@@ -341,66 +337,43 @@ function removeBook(book: Book) {
                     </q-circular-progress>
                     <span class="today__text">
                       <b>Hoy {{ formatDuration(todaySeconds) }}</b>
-                      <span>de tu meta de {{ dailyGoalMinutes() }} min</span>
+                      <span>meta {{ dailyGoalMinutes() }} min</span>
                     </span>
                   </button>
                   <!-- Reto del año -->
-                  <button class="today__goal year-goal" @click="editGoal">
-                    <template v-if="goal">
-                      <q-circular-progress
-                        :value="Math.min(100, (doneThisYear / goal) * 100)"
-                        size="46px"
-                        :thickness="0.22"
-                        color="secondary"
-                        track-color="white"
-                        show-value
-                        class="text-weight-bold"
-                      >
-                        {{ doneThisYear >= goal ? '🏆' : doneThisYear }}
-                      </q-circular-progress>
-                      <span class="today__text">
-                        <b>Reto {{ thisYear }}: {{ doneThisYear }} / {{ goal }}</b>
-                        <span>{{ doneThisYear >= goal ? '¡Conseguido! 🎉' : `libros terminados` }}</span>
-                      </span>
-                    </template>
-                    <template v-else>
-                      <span class="year-goal__icon">🎯</span>
-                      <span class="today__text">
-                        <b>Reto {{ thisYear }}</b>
-                        <span>¿Cuántos libros este año?</span>
-                      </span>
-                    </template>
+                  <button class="today__goal" @click="editGoal">
+                    <q-circular-progress
+                      v-if="goal"
+                      :value="Math.min(100, (doneThisYear / goal) * 100)"
+                      :size="ringSize"
+                      :thickness="0.22"
+                      color="secondary"
+                      track-color="white"
+                      show-value
+                      class="text-weight-bold"
+                    >
+                      {{ doneThisYear >= goal ? '🏆' : doneThisYear }}
+                    </q-circular-progress>
+                    <span v-else class="year-goal__icon">🎯</span>
+                    <span class="today__text">
+                      <b>Reto {{ thisYear }}</b>
+                      <span v-if="!goal">¿Cuántos libros?</span>
+                      <span v-else-if="doneThisYear >= goal">¡Conseguido! 🎉</span>
+                      <span v-else>{{ doneThisYear }} de {{ goal }} libros</span>
+                    </span>
                   </button>
-                  <q-btn
-                    rounded
-                    unelevated
-                    no-caps
-                    color="white"
-                    text-color="primary"
-                    icon="insights"
-                    label="Estadísticas y logros"
-                    @click="router.push({ name: 'stats' })"
-                  />
-                  <q-btn
-                    rounded
-                    unelevated
-                    no-caps
-                    color="white"
-                    text-color="primary"
-                    icon="format_quote"
-                    label="Mis frases"
-                    @click="router.push({ name: 'quotes' })"
-                  />
-                  <q-btn
-                    rounded
-                    unelevated
-                    no-caps
-                    color="white"
-                    text-color="primary"
-                    icon="bookmark_add"
-                    label="Quiero leer"
-                    @click="router.push({ name: 'wishlist' })"
-                  />
+                </div>
+                <!-- Accesos rápidos -->
+                <div v-if="books.length" class="quick">
+                  <button class="quick__btn" @click="router.push({ name: 'stats' })">
+                    <q-icon name="insights" /><span>Estadísticas</span>
+                  </button>
+                  <button class="quick__btn" @click="router.push({ name: 'quotes' })">
+                    <q-icon name="format_quote" /><span>Mis frases</span>
+                  </button>
+                  <button class="quick__btn" @click="router.push({ name: 'wishlist' })">
+                    <q-icon name="bookmark_add" /><span>Quiero leer</span>
+                  </button>
                 </div>
               </div>
               <ReadingBuddy
@@ -712,12 +685,41 @@ function removeBook(book: Book) {
   font-size: 0.78rem;
   opacity: 0.8;
 }
-.today {
+.goals {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   margin-top: 12px;
+}
+/* Accesos rápidos: pastillas en el ordenador, tres botones iguales en el móvil */
+.quick {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+.quick__btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  border: 0;
+  border-radius: 999px;
+  background: #fff;
+  color: var(--q-primary);
+  font: inherit;
+  font-weight: 600;
+  font-size: 0.88rem;
+  cursor: pointer;
+  box-shadow: 0 2px 6px -2px rgba(80, 40, 10, 0.25);
+  transition: transform 0.15s;
+}
+.quick__btn:active {
+  transform: scale(0.96);
+}
+.quick__btn .q-icon {
+  font-size: 1.2rem;
 }
 .today__goal {
   display: flex;
@@ -770,6 +772,67 @@ function removeBook(book: Book) {
 .deco--7 { top: 40%; left: 96%; animation-delay: 2.5s; }
 
 @media (max-width: 599px) {
+  /* Cifras en una sola fila compacta */
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 6px;
+  }
+  .stat {
+    flex-direction: column;
+    align-items: center;
+    gap: 0;
+    padding: 6px 2px;
+    border-radius: 14px;
+    text-align: center;
+  }
+  .stat__icon {
+    font-size: 0.95rem;
+  }
+  .stat__label {
+    font-size: 0.62rem;
+    line-height: 1.1;
+  }
+  /* Meta de hoy y reto, uno al lado del otro */
+  .goals {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+    margin-top: 8px;
+  }
+  .today__goal {
+    gap: 7px;
+    padding: 3px 8px 3px 3px;
+    min-width: 0;
+  }
+  .today__text {
+    font-size: 0.78rem;
+    min-width: 0;
+  }
+  .today__text b,
+  .today__text span {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .year-goal__icon {
+    width: 38px;
+    height: 38px;
+    font-size: 1.3rem;
+  }
+  .quick {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 6px;
+    margin-top: 8px;
+  }
+  .quick__btn {
+    flex-direction: column;
+    gap: 2px;
+    padding: 8px 4px;
+    border-radius: 14px;
+    font-size: 0.72rem;
+  }
   .hero {
     margin: 10px;
     border-radius: 22px;
@@ -785,19 +848,8 @@ function removeBook(book: Book) {
   .hero h1 {
     margin-bottom: 12px;
   }
-  .stats {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 6px;
-  }
-  .stat {
-    padding: 5px 10px;
-  }
   .stat__value {
     font-size: 1rem;
-  }
-  .stat__label {
-    font-size: 0.72rem;
   }
   /* En pantallas estrechas solo se dejan los adornos de los bordes. */
   .deco--1,

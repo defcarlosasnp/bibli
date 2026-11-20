@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { formatRemaining, paceVersion, recordPace, secondsPer } from '@/services/pace'
 import { askRating, openNotebook } from '@/services/bookActions'
 import { refreshReminder } from '@/services/reminder'
+import { READER_THEMES, type PdfFit, type ReaderTheme } from '@/services/readerPrefs'
 import { useQuasar } from 'quasar'
 import { liveQuery } from 'dexie'
 import ePub, { EpubCFI, type Book as EpubBook, type Rendition, type NavItem } from 'epubjs'
@@ -48,14 +49,6 @@ const loading = ref(true)
 const viewport = ref<HTMLDivElement>()
 const canvas = ref<HTMLCanvasElement>()
 const drawer = ref(false)
-/** Temas de lectura: color del papel y de la letra. */
-type ReaderTheme = 'day' | 'sepia' | 'dusk' | 'night'
-const READER_THEMES: { id: ReaderTheme; label: string; bg: string; ink: string; dark: boolean }[] = [
-  { id: 'day', label: 'Papel', bg: '#fdf9f2', ink: '#2b2018', dark: false },
-  { id: 'sepia', label: 'Sepia', bg: '#f1e3c6', ink: '#4a3524', dark: false },
-  { id: 'dusk', label: 'Gris', bg: '#2d2c30', ink: '#dcd6cc', dark: true },
-  { id: 'night', label: 'Noche', bg: '#0f0e0d', ink: '#cfc5b8', dark: true },
-]
 function initialTheme(): ReaderTheme {
   const saved = localStorage.getItem('bibli.readerTheme') as ReaderTheme | null
   if (saved && READER_THEMES.some((t) => t.id === saved)) return saved
@@ -243,6 +236,22 @@ onBeforeUnmount(() => {
 
 const PDF_MARGIN = 14
 
+/**
+ * Cómo cabe la hoja: entera en pantalla, o a lo ancho y se baja con el dedo (en el móvil la letra
+ * de una página entera queda diminuta, así que ahí es lo predeterminado).
+ */
+const pdfFit = ref<PdfFit>(
+  (localStorage.getItem('bibli.pdfFit') as PdfFit | null) ?? (window.innerWidth < 700 ? 'width' : 'page'),
+)
+function setPdfFit(f: PdfFit) {
+  pdfFit.value = f
+  localStorage.setItem('bibli.pdfFit', f)
+  zoom.value = 1
+  renderPdfPage()
+}
+/** Al volver a la página anterior deslizando hacia abajo, se aparece al final de esa página. */
+let landAtBottom = false
+
 async function initPdf(data: ArrayBuffer, meta: Book) {
   const opened = await openPdf(data)
   pdf.value = opened.doc
@@ -267,7 +276,8 @@ async function renderPdfPage(dir = 0) {
   const box = viewport.value.getBoundingClientRect()
   // Margen alrededor de la hoja (el mismo que el padding de .pdf-viewport)
   const m = 2 * PDF_MARGIN
-  const fit = Math.min((box.width - m) / base.width, (box.height - m) / base.height) * zoom.value
+  const fitWidth = (box.width - m) / base.width
+  const fit = (pdfFit.value === 'width' ? fitWidth : Math.min(fitWidth, (box.height - m) / base.height)) * zoom.value
   const dpr = window.devicePixelRatio || 1
   const vp = p.getViewport({ scale: fit * dpr })
   canvas.value.width = Math.floor(vp.width)
@@ -278,6 +288,12 @@ async function renderPdfPage(dir = 0) {
   try {
     await renderTask.promise
     pdfViewport.value = p.getViewport({ scale: fit })
+    // Página nueva: arriba del todo (o abajo, si se llegó deslizando hacia atrás desde la siguiente)
+    if (dir && viewport.value) {
+      viewport.value.scrollLeft = 0
+      viewport.value.scrollTop = landAtBottom ? viewport.value.scrollHeight : 0
+    }
+    landAtBottom = false
     if (dir) animateTurn(canvas.value?.parentElement ?? undefined, dir)
     await renderTextLayer(p, pdfViewport.value)
   } catch (err) {
@@ -910,6 +926,8 @@ function handleReaderTap(x: number, halves = false) {
 /** PDF: tocar un subrayado abre su nota; tocar los bordes pasa página. */
 function onViewportClick(e: MouseEvent) {
   if (book.value?.format !== 'pdf' || window.getSelection()?.toString()) return
+  // Soltar los dedos tras un zoom no es un toque para pasar página
+  if (Date.now() - pinchEndedAt < 500) return
   const pageEl = (e.target as HTMLElement).closest('.pdf-page')
   if (pageEl) {
     const box = pageEl.getBoundingClientRect()
@@ -1420,12 +1438,102 @@ function setZoom(delta: number) {
 }
 
 function onSwipe({ direction }: { direction?: string }) {
-  if (book.value?.format !== 'pdf') return
+  if (book.value?.format !== 'pdf' || pinch || Date.now() - pinchEndedAt < 500) return
   // Arrastrar para seleccionar texto no debe pasar de página
   if (window.getSelection()?.toString()) return
+  // Con zoom, deslizar de lado sirve para moverse por la hoja, no para pasar página
+  const vp = viewport.value
+  if (vp && vp.scrollWidth > vp.clientWidth + 4) return
   if (direction === 'left') next()
   else if (direction === 'right') prev()
 }
+
+// ---------- PDF: zoom con dos dedos y paso de página deslizando ----------
+
+/** Pellizco en curso: distancia y zoom al empezar, y punto de la hoja bajo los dedos. */
+let pinch: { d0: number; z0: number; ox: number; oy: number } | null = null
+let pinchEndedAt = 0
+/** Escala provisional mientras se pellizca (se dibuja de verdad al soltar). */
+const pinchScale = ref(1)
+const pinchOrigin = ref('50% 50%')
+/** Arrastre de un dedo: dónde empezó y si la hoja ya estaba arriba o abajo del todo. */
+let drag: { y: number; t: number; atTop: boolean; atBottom: boolean } | null = null
+
+const touchDistance = (t: TouchList) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY)
+
+function onPdfTouchStart(e: TouchEvent) {
+  if (book.value?.format !== 'pdf') return
+  const vp = viewport.value
+  const pageEl = canvas.value?.parentElement
+  if (e.touches.length === 2 && pageEl) {
+    drag = null
+    const r = pageEl.getBoundingClientRect()
+    const mx = (e.touches[0].clientX + e.touches[1].clientX) / 2
+    const my = (e.touches[0].clientY + e.touches[1].clientY) / 2
+    pinch = { d0: touchDistance(e.touches), z0: zoom.value, ox: mx - r.left, oy: my - r.top }
+    pinchOrigin.value = `${pinch.ox}px ${pinch.oy}px`
+  } else if (e.touches.length === 1 && vp && !pinch) {
+    drag = {
+      y: e.touches[0].clientY,
+      t: Date.now(),
+      atTop: vp.scrollTop <= 1,
+      atBottom: vp.scrollTop + vp.clientHeight >= vp.scrollHeight - 2,
+    }
+  }
+}
+
+function onPdfTouchMove(e: TouchEvent) {
+  if (!pinch || e.touches.length !== 2) return
+  // Que el navegador no amplíe toda la página: el zoom es solo de la hoja
+  e.preventDefault()
+  const z = Math.min(4, Math.max(0.6, (pinch.z0 * touchDistance(e.touches)) / pinch.d0))
+  pinchScale.value = z / pinch.z0
+}
+
+async function onPdfTouchEnd(e: TouchEvent) {
+  if (pinch) {
+    if (e.touches.length >= 2) return
+    const { z0, ox, oy } = pinch
+    const ratio = pinchScale.value
+    pinch = null
+    pinchEndedAt = Date.now()
+    zoom.value = +(z0 * ratio).toFixed(2)
+    await renderPdfPage()
+    pinchScale.value = 1
+    // Que el punto que estaba bajo los dedos siga ahí después de redibujar
+    const vp = viewport.value
+    if (vp) {
+      vp.scrollLeft += ox * (ratio - 1)
+      vp.scrollTop += oy * (ratio - 1)
+    }
+    return
+  }
+  const d = drag
+  drag = null
+  if (!d || e.changedTouches.length !== 1 || Date.now() - d.t > 900) return
+  if (window.getSelection()?.toString()) return
+  const dy = e.changedTouches[0].clientY - d.y
+  // Ya estaba al final de la hoja y siguió deslizando hacia arriba: página siguiente (y al revés)
+  if (d.atBottom && dy < -70) next()
+  else if (d.atTop && dy > 70 && page.value > 1) {
+    landAtBottom = true
+    prev()
+  }
+}
+
+// Al leer en voz alta o buscar, que la frase quede a la vista aunque la hoja sea más alta que la pantalla
+async function revealInPdf(selector: string) {
+  await nextTick()
+  document.querySelector(`.pdf-page ${selector}`)?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+}
+watch(
+  () => pdfHighlightRects.value,
+  () => revealInPdf('.tts-hl'),
+)
+watch(
+  () => pdfSearchRects.value,
+  () => revealInPdf('.search-hl'),
+)
 </script>
 
 <template>
@@ -1444,6 +1552,20 @@ function onSwipe({ direction }: { direction?: string }) {
               <template v-if="book?.format === 'pdf'">
                 <q-btn flat round icon="zoom_out" aria-label="Alejar" @click="setZoom(-0.25)" />
                 <q-btn flat round icon="zoom_in" aria-label="Acercar" @click="setZoom(0.25)" />
+                <q-btn-toggle
+                  :model-value="pdfFit"
+                  dense
+                  no-caps
+                  unelevated
+                  rounded
+                  toggle-color="accent"
+                  class="q-ml-xs"
+                  :options="[
+                    { label: 'Página', value: 'page' },
+                    { label: 'Ancho', value: 'width' },
+                  ]"
+                  @update:model-value="setPdfFit"
+                />
               </template>
               <template v-else>
                 <q-btn flat round icon="text_decrease" aria-label="Letra más pequeña" @click="setFontSize(-10)" />
@@ -1471,6 +1593,15 @@ function onSwipe({ direction }: { direction?: string }) {
           <template v-if="book?.format === 'pdf'">
             <q-btn flat round icon="zoom_out" @click="setZoom(-0.25)" />
             <q-btn flat round icon="zoom_in" @click="setZoom(0.25)" />
+            <q-btn
+              flat
+              round
+              :icon="pdfFit === 'width' ? 'fit_screen' : 'open_in_full'"
+              :aria-label="pdfFit === 'width' ? 'Ver la página entera' : 'Ajustar al ancho'"
+              @click="setPdfFit(pdfFit === 'width' ? 'page' : 'width')"
+            >
+              <q-tooltip>{{ pdfFit === 'width' ? 'Ver la página entera' : 'Ajustar al ancho' }}</q-tooltip>
+            </q-btn>
           </template>
           <template v-else-if="book?.format === 'epub'">
             <q-btn flat round icon="text_decrease" @click="setFontSize(-10)" />
@@ -1677,8 +1808,15 @@ function onSwipe({ direction }: { direction?: string }) {
           class="viewport"
           :class="{ 'pdf-viewport': book?.format === 'pdf' }"
           @click="onViewportClick"
+          @touchstart="onPdfTouchStart"
+          @touchmove="onPdfTouchMove"
+          @touchend="onPdfTouchEnd"
         >
-          <div v-if="book?.format === 'pdf'" class="pdf-page">
+          <div
+            v-if="book?.format === 'pdf'"
+            class="pdf-page"
+            :style="pinchScale !== 1 ? { transform: `scale(${pinchScale})`, transformOrigin: pinchOrigin } : undefined"
+          >
             <canvas ref="canvas" />
             <template v-for="h in pdfPageHighlights" :key="h.id">
               <div
@@ -1897,8 +2035,12 @@ function onSwipe({ direction }: { direction?: string }) {
 }
 .pdf-viewport {
   overflow: auto;
+  /* El zoom con dos dedos lo hace Bibli (solo la hoja), no el navegador */
+  touch-action: pan-x pan-y;
+  overscroll-behavior: contain;
   display: flex;
-  justify-content: center;
+  /* Sin justify-content: center: con zoom, la hoja se saldría por la izquierda y no se podría llegar.
+     El margin: auto de .pdf-page la centra cuando cabe. */
   align-items: flex-start;
   padding: 14px; /* = PDF_MARGIN */
   /* Mesa de madera clara alrededor de la hoja, a juego con la app */

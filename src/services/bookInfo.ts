@@ -153,6 +153,14 @@ async function coverFromOpenLibrary(id: number): Promise<string | null> {
   })
 }
 
+/** Buscar en internet (Open Library) el autor o la portada que falten. Se puede apagar en Ajustes. */
+export function onlineInfoEnabled() {
+  return localStorage.getItem('bibli.onlineInfo') !== '0'
+}
+export function setOnlineInfo(on: boolean) {
+  localStorage.setItem('bibli.onlineInfo', on ? '1' : '0')
+}
+
 /** Revisa un libro y guarda lo que encuentre. */
 async function completeBook(book: Book) {
   const changes: Partial<Book> = { infoChecked: true }
@@ -168,7 +176,7 @@ async function completeBook(book: Book) {
       if (found.index != null && book.seriesIndex == null) changes.seriesIndex = found.index
     }
   }
-  if (!book.author || !book.cover) {
+  if ((!book.author || !book.cover) && onlineInfoEnabled()) {
     try {
       if (!navigator.onLine) throw new Error('offline')
       const doc = await openLibraryMatch(book)
@@ -185,6 +193,14 @@ async function completeBook(book: Book) {
     }
   }
   await db.books.update(book.id, changes)
+}
+
+/** Vuelve a revisar todos los libros (solo rellena lo que falte; nunca cambia lo que ya hay). */
+export async function recheckLibraryInfo() {
+  await db.books.toCollection().modify((b: Book) => {
+    b.infoChecked = false
+  })
+  await completeLibraryInfo()
 }
 
 let running = false
